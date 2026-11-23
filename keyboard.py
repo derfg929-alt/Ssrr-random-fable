@@ -1,6 +1,6 @@
 import telebot
 
-from tool import T, ikb, short, fmt_dt, user_tz
+from tool import T, bot_username, get_user, ikb, is_users_admin, short, fmt_dt, user_tz
 
 PAGE_SIZE = 8
 
@@ -12,6 +12,9 @@ def main_menu(user_id):
     kb.row(b["create"], b["my"])
     kb.row(b["channels"], b["lang"])
     kb.row(b["support"], b["invite"])
+    user = get_user(user_id)
+    if is_users_admin(user_id, getattr(user, "username", None) if user else None):
+        kb.row(b["users"])
     return kb
 
 
@@ -78,11 +81,36 @@ def quick_kb(user_id, field, draw_id=None):
 
 
 # ---- Кнопка под постом в канале ----
-def join_kb(draw, count=0, preview=False):
-    label = draw.button_text or "Участвовать"
+def _pretty_join_label(label):
+    """Добавляет эмодзи, если автор его не поставил, чтобы кнопка выглядела живой."""
+    label = (label or "").strip()
+    if label and not any(ord(ch) > 0x2100 for ch in label):
+        label = f"🎉 {label}"
+    return label or "🎉"
+
+
+def join_kb(draw, count=0, preview=False, styled=True):
+    label = _pretty_join_label(draw.button_text or T(draw.owner_id)["post"]["join_default"])
     if count:
-        label = f"{label} ({count})"
-    return ikb([[(label, "noop" if preview else f"join:{draw.id}")]])
+        label = f"{label} · {count}"
+    label = short(label, 64)
+    if preview:
+        target = "noop"
+    else:
+        username = bot_username()
+        # Кнопка-ссылка открывает бота и переживает пересылку поста.
+        target = f"https://t.me/{username}?start=join_{draw.id}" if username else f"join:{draw.id}"
+    style = "success" if styled else None
+    row = (label, target) + ((style,) if style else ())
+    return ikb([[row]])
+
+
+# ---- Капча: выбор номера картинки ----
+def captcha_kb(draw_id, nonce):
+    def btn(n):
+        return (f"{n}️⃣", f"cap:{draw_id}:{nonce}:{n - 1}", "primary")
+
+    return ikb([[btn(1), btn(2)], [btn(3), btn(4)]])
 
 
 # ---- Редактор черновика ----

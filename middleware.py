@@ -7,19 +7,22 @@ import threading
 import time
 import traceback
 
+import telebot
 from telebot.apihelper import ApiTelegramException
 
+import captcha
 import config
 import keyboard
 import models
 from app import bot, db
 from base import IntegrityError
 from models import utcnow
-from tool import T, esc, fmt_dt, ikb, plain_len, short, tz_name, user_tz
+from tool import T, bot_username, esc, fmt_dt, ikb, short, tz_name, user_tz
 
 OK_STATUSES = ("member", "administrator", "creator")
 _bot_id = None
 _last_edit = {}          # draw_id -> время последнего обновления счётчика
+_synced = set()          # draw_id, у которых кнопка уже переведена на URL-вид
 _rng = random.SystemRandom()
 
 
@@ -265,45 +268,35 @@ def missing_subscriptions(d, user_id):
     return missing, False
 
 
-def join_link(draw_id):
-    """Ссылка на бота, которая сразу засчитывает участие (переживает пересылку поста)."""
-    try:
-        username = bot.get_me().username
-    except Exception:
-        username = ""
-    return f"https://t.me/{username}?start=join_{draw_id}" if username else None
-
-
-def join_draw(call):
-    """Нажатие «Участвовать». Возвращает (текст, show_alert) для answer_callback_query."""
-    user = call.from_user
-    try:
-        draw_id = int(call.data.split(":")[1])
-    except (IndexError, ValueError):
-        return T(user.id, user.language_code)["post"]["finished"], True
-    return join_draw_by_id(user, draw_id)
-
-
-def join_draw_by_id(user, draw_id):
-    """Участие по id — из кнопки или из диплинка /start join_<id>."""
+def _join_precheck(user, draw_id):
+    """Проверяет, может ли пользователь участвовать. (Draw, None) или (None, (текст, alert))."""
     t = T(user.id, user.language_code)["post"]
     try:
         draw_id = int(draw_id)
     except (TypeError, ValueError):
-        return t["finished"], True
+        return None, (t["finished"], True)
     d = db.get_one(models.Draw, id=draw_id)
     if not d or d.status != "active":
-        return t["finished"], True
+        return None, (t["finished"], True)
     if db.get_one(models.Player, draw_id=d.id, user_id=str(user.id)):
-        return t["already"], False
+        return None, (t["already"], False)
     if d.max_players and db.count(models.Player, draw_id=d.id) >= d.max_players:
-        return t["full"], True
+        return None, (t["full"], True)
 
     missing, err = missing_subscriptions(d, user.id)
     if err:
-        return t["check_failed"], True
+        return None, (t["check_failed"], True)
     if missing:
-        return short(t["not_subscribed"].format(channels=", ".join(missing)), 200), True
+        return None, (short(t["not_subscribed"].format(channels=", ".join(missing)), 200), True)
+    return d, None
+
+
+def join_draw_by_id(user, draw_id):
+    """Записывает участника (после капчи или при выключенной капче)."""
+    t = T(user.id, user.language_code)["post"]
+    d, err = _join_precheck(user, draw_id)
+    if err:
+        return err
 
     name = " ".join(x for x in (user.first_name, user.last_name) if x) or user.username or str(user.id)
     try:
@@ -317,6 +310,124 @@ def join_draw_by_id(user, draw_id):
     return t["joined"], False
 
 
+def start_join(call):
+    """Нажатие «Участвовать» в канале: проверяем условия и присылаем капчу в личку."""
+    user = call.from_user
+    try:
+        draw_id = int(call.data.split(":")[1])
+    except (IndexError, ValueError):
+        return T(user.id, user.language_code)["post"]["finished"], True
+    return begin_join(user, draw_id)
+
+
+def begin_join(user, draw_id):
+    """Проверка условий + отправка капчи. Возвращает (текст, alert) для ответа на callback."""
+    d, err = _join_precheck(user, draw_id)
+    if err:
+        return err
+    if not config.CAPTCHA_ENABLED:
+        return join_draw_by_id(user, d.id)
+    # Повторное нажатие не должно плодить новые капчи: показываем уже выданную.
+    existing = captcha.get(user.id)
+    if existing and existing.get("draw_id") == d.id:
+        return _send_captcha(user, d, existing)
+    return _send_captcha(user, d)
+
+
+def take_pending(user_id):
+    """Попытка участия, которую бот не смог начать сам (пользователь не открывал бота)."""
+    return captcha.pop_pending(user_id)
+
+
+def _captcha_caption(uid, item):
+    t = T(uid)["captcha"]
+    color_key, shape_key = item["target"]
+    target = t["target"].format(color=t["colors"][color_key], shape=t["shapes"][shape_key])
+    return t["caption"].format(target=target)
+
+
+def _send_captcha(user, d, item=None):
+    t = T(user.id, user.language_code)["captcha"]
+    item = item or captcha.make(d.id)
+    kb = keyboard.captcha_kb(d.id, item["nonce"])
+    try:
+        msg = bot.send_photo(user.id, io.BytesIO(item["png"]), caption=_captcha_caption(user.id, item),
+                             parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        # Бот не может писать первым: запомним попытку и попросим открыть бота.
+        captcha.set_pending(user.id, d.id)
+        username = bot_username()
+        return t["open_bot"].format(bot=f"@{username}" if username else "бот"), True
+    captcha.save(user.id, item, msg.chat.id, msg.message_id)
+    return "", False
+
+
+def handle_captcha(call):
+    """Нажатие номера на капче. Возвращает (текст, alert) для ответа на callback."""
+    user = call.from_user
+    uid = user.id
+    t = T(uid, user.language_code)["captcha"]
+    p = (call.data or "").split(":")
+    if len(p) < 4:
+        return "", False
+    try:
+        draw_id, idx = int(p[1]), int(p[3])
+    except ValueError:
+        return "", False
+
+    item = captcha.get(uid)
+    if not item or item.get("nonce") != p[2] or item.get("draw_id") != draw_id:
+        return t["expired"], True
+
+    if idx != item["answer"]:
+        tries = item.get("tries", 0) + 1
+        if tries >= captcha.MAX_TRIES:
+            captcha.drop(uid)
+            _delete_message(uid, item.get("message_id"))
+            return t["too_many"], True
+        fresh = captcha.make(draw_id)
+        fresh["tries"] = tries
+        captcha.save(uid, fresh, item.get("chat_id", uid), item.get("message_id"))
+        _replace_captcha(uid, item.get("message_id"), fresh)
+        return t["wrong"], False
+
+    captcha.drop(uid)
+    _delete_message(uid, item.get("message_id"))
+    text, alert = join_draw_by_id(user, draw_id)
+    try:
+        bot.send_message(uid, text, reply_markup=keyboard.main_menu(uid), disable_web_page_preview=True)
+    except Exception:
+        pass
+    return "", False
+
+
+def _delete_message(chat_id, message_id):
+    if not message_id:
+        return
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+
+def _replace_captcha(uid, message_id, item):
+    caption = _captcha_caption(uid, item)
+    kb = keyboard.captcha_kb(item["draw_id"], item["nonce"])
+    if message_id:
+        try:
+            bot.edit_message_media(
+                telebot.types.InputMediaPhoto(io.BytesIO(item["png"]), caption=caption, parse_mode="HTML"),
+                chat_id=uid, message_id=message_id, reply_markup=kb)
+            return
+        except Exception:
+            _delete_message(uid, message_id)
+    try:
+        msg = bot.send_photo(uid, io.BytesIO(item["png"]), caption=caption, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        return
+    captcha.save(uid, item, msg.chat.id, msg.message_id)
+
+
 # ======================= ПУБЛИКАЦИЯ / ЗАВЕРШЕНИЕ =======================
 def publish_draw(draw_id):
     """scheduled -> active и отправка поста. Возвращает (ok, ссылка_или_ошибка)."""
@@ -324,13 +435,6 @@ def publish_draw(draw_id):
         return False, None  # уже опубликован другим потоком
     d = db.get_one(models.Draw, id=draw_id)
     text = d.text or ""
-    link = join_link(d.id) if config.JOIN_LINK_IN_POST else None
-    line = T(d.owner_id)["post"].get("join_link_line", "👉 {link}").format(link=link) if link else ""
-    if line:
-        limit = 4096 if d.file_type == "text" else 1024
-        if plain_len(text) + plain_len(line) + 2 <= limit:
-            text = f"{text}\n\n{line}" if text else line
-            line = ""
     try:
         msg = send_post(d.channel_id, d.file_type, d.file_id, text, keyboard.join_kb(d, 0))
     except Exception as e:
@@ -342,12 +446,7 @@ def publish_draw(draw_id):
             pass
         return False, str(e)
     db.update(models.Draw, {"message_id": msg.message_id, "shown_count": 0}, id=d.id)
-    if line:  # ссылка не влезла в подпись — отправляем отдельным сообщением
-        try:
-            bot.send_message(d.channel_id, line, reply_to_message_id=msg.message_id,
-                             disable_web_page_preview=True)
-        except Exception:
-            pass
+    _synced.add(d.id)
     return True, post_link(db.get_one(models.Draw, id=d.id))
 
 
@@ -456,14 +555,18 @@ def delete_draw(draw_id):
     db.delete(models.DrawChannel, draw_id=draw_id)
     db.delete(models.Draw, id=draw_id)
     _last_edit.pop(draw_id, None)
+    _synced.discard(draw_id)
 
 
 # ======================= ВОРКЕР =======================
 def refresh_counter(d):
-    if time.time() - _last_edit.get(d.id, 0) < config.COUNTER_EDIT_INTERVAL or not d.message_id:
+    if not d.message_id:
         return
     n = db.count(models.Player, draw_id=d.id)
-    if n == d.shown_count:
+    first = d.id not in _synced
+    if not first and time.time() - _last_edit.get(d.id, 0) < config.COUNTER_EDIT_INTERVAL:
+        return
+    if not first and n == d.shown_count:
         return
     try:
         bot.edit_message_reply_markup(d.channel_id, d.message_id, reply_markup=keyboard.join_kb(d, n))
@@ -474,6 +577,7 @@ def refresh_counter(d):
             return
     except Exception:
         pass
+    _synced.add(d.id)
     db.update(models.Draw, {"shown_count": n}, id=d.id)
     _last_edit[d.id] = time.time()
 

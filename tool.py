@@ -8,9 +8,31 @@ import telebot
 
 import config
 import models
-from app import db
+from app import bot, db
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+_bot_username = None
+
+
+def bot_username():
+    """@username бота (кешируется). Нужен для кнопок-ссылок вида t.me/bot?start=..."""
+    global _bot_username
+    if not _bot_username:
+        try:
+            _bot_username = bot.get_me().username or ""
+        except Exception:
+            return ""
+    return _bot_username
+
+
+def is_users_admin(user_id, username=None):
+    """Кому доступен список пользователей бота."""
+    uid = str(user_id)
+    if uid in config.USERS_ADMIN_IDS or uid in config.ADMIN_IDS:
+        return True
+    name = (username or "").lower()
+    return bool(name and name == config.ADMIN_USERNAME)
 
 
 # ---- Тексты бота (RU.json / ENG.json) ----
@@ -136,15 +158,25 @@ def short(text, n):
 
 # ---- Inline-клавиатуры ----
 def ikb(rows):
-    """rows = [[(текст, callback_data | https-ссылка), ...], ...]"""
+    """rows = [[(текст, callback_data | https-ссылка[, стиль]), ...], ...]
+
+    Стиль — необязательный третий элемент: "success", "danger" или "primary".
+    Старые версии pyTelegramBotAPI стиль не знают — тогда кнопка обычная.
+    """
     kb = telebot.types.InlineKeyboardMarkup()
     for row in rows:
         buttons = []
-        for text, data in row:
-            if data.startswith("http"):
-                buttons.append(telebot.types.InlineKeyboardButton(text=text, url=data))
-            else:
-                buttons.append(telebot.types.InlineKeyboardButton(text=text, callback_data=data))
+        for item in row:
+            text, data = item[0], item[1]
+            style = item[2] if len(item) > 2 else None
+            kwargs = {"url": data} if data.startswith("http") else {"callback_data": data}
+            if style:
+                kwargs["style"] = style
+            try:
+                buttons.append(telebot.types.InlineKeyboardButton(text=text, **kwargs))
+            except TypeError:
+                kwargs.pop("style", None)
+                buttons.append(telebot.types.InlineKeyboardButton(text=text, **kwargs))
         kb.row(*buttons)
     return kb
 

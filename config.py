@@ -13,15 +13,15 @@ db_path = DB_FILE if os.path.isabs(DB_FILE) else os.path.join(DATA_DIR, DB_FILE)
 # Время всегда московское (МСК, UTC+3). 180 минут = UTC+3.
 DEFAULT_TZ = 180
 
-# Добавлять в текст поста ссылку «Участвовать», чтобы она сохранялась при пересылке
-JOIN_LINK_IN_POST = os.getenv("JOIN_LINK_IN_POST", "1").lower() not in ("0", "false", "no", "off")
+# Капча с картинками при нажатии «Участвовать» (1 — включена)
+CAPTCHA_ENABLED = os.getenv("CAPTCHA_ENABLED", "1").lower() not in ("0", "false", "no", "off")
 
 # Кому доступны команды /backup и /restore (резервная копия JSON)
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Som_teg").lstrip("@").lower()
 ADMIN_IDS = {x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()}
 
 # Кому доступна команда «пользователи» (число зарегистрированных и список юзернеймов)
-USERS_ADMIN_ID = os.getenv("USERS_ADMIN_ID", "8039111975").strip()
+USERS_ADMIN_IDS = {x.strip() for x in os.getenv("USERS_ADMIN_ID", "8039111975").split(",") if x.strip()}
 
 # Автоматически запоминать каналы, куда бот добавлен администратором
 AUTO_DETECT_CHANNELS = os.getenv("AUTO_DETECT_CHANNELS", "1").lower() not in ("0", "false", "no", "off")
