@@ -3,11 +3,22 @@ import os
 # Токен бота от @BotFather (лучше задавать через переменную окружения BOT_TOKEN)
 token = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
 
-# База данных. Для начала хватит SQLite, для нагрузки можно postgresql://user:pass@host/db
-db_url = os.getenv("DB_URL", "sqlite:///randomizer.db")
+# Данные бота хранятся в обычном JSON-файле и сохраняются автоматически.
+# DATA_DIR можно указать на постоянный диск хостинга, чтобы данные пережили обновление.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.abspath(os.getenv("DATA_DIR", os.path.join(BASE_DIR, "data")))
+DB_FILE = os.getenv("DB_FILE", "bot_data.json")
+db_path = DB_FILE if os.path.isabs(DB_FILE) else os.path.join(DATA_DIR, DB_FILE)
 
-# Часовой пояс по умолчанию (в минутах от UTC). 180 = UTC+3 (Москва, МСК)
-DEFAULT_TZ = int(os.getenv("DEFAULT_TZ", "180"))
+# Время всегда московское (МСК, UTC+3). 180 минут = UTC+3.
+DEFAULT_TZ = 180
+
+# Добавлять в текст поста ссылку «Участвовать», чтобы она сохранялась при пересылке
+JOIN_LINK_IN_POST = os.getenv("JOIN_LINK_IN_POST", "1").lower() not in ("0", "false", "no", "off")
+
+# Кому доступны команды /backup и /restore (резервная копия JSON)
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Som_teg").lstrip("@").lower()
+ADMIN_IDS = {x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()}
 
 # Автоматически запоминать каналы, куда бот добавлен администратором
 AUTO_DETECT_CHANNELS = os.getenv("AUTO_DETECT_CHANNELS", "1").lower() not in ("0", "false", "no", "off")

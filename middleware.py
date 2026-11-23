@@ -7,15 +7,15 @@ import threading
 import time
 import traceback
 
-from sqlalchemy.exc import IntegrityError
 from telebot.apihelper import ApiTelegramException
 
 import config
 import keyboard
 import models
 from app import bot, db
+from base import IntegrityError
 from models import utcnow
-from tool import T, esc, fmt_dt, ikb, short, tz_name, user_tz
+from tool import T, esc, fmt_dt, ikb, plain_len, short, tz_name, user_tz
 
 OK_STATUSES = ("member", "administrator", "creator")
 _bot_id = None
@@ -265,13 +265,31 @@ def missing_subscriptions(d, user_id):
     return missing, False
 
 
+def join_link(draw_id):
+    """Ссылка на бота, которая сразу засчитывает участие (переживает пересылку поста)."""
+    try:
+        username = bot.get_me().username
+    except Exception:
+        username = ""
+    return f"https://t.me/{username}?start=join_{draw_id}" if username else None
+
+
 def join_draw(call):
     """Нажатие «Участвовать». Возвращает (текст, show_alert) для answer_callback_query."""
     user = call.from_user
-    t = T(user.id, user.language_code)["post"]
     try:
         draw_id = int(call.data.split(":")[1])
     except (IndexError, ValueError):
+        return T(user.id, user.language_code)["post"]["finished"], True
+    return join_draw_by_id(user, draw_id)
+
+
+def join_draw_by_id(user, draw_id):
+    """Участие по id — из кнопки или из диплинка /start join_<id>."""
+    t = T(user.id, user.language_code)["post"]
+    try:
+        draw_id = int(draw_id)
+    except (TypeError, ValueError):
         return t["finished"], True
     d = db.get_one(models.Draw, id=draw_id)
     if not d or d.status != "active":
@@ -305,8 +323,16 @@ def publish_draw(draw_id):
     if not db.update(models.Draw, {"status": "active"}, id=draw_id, status="scheduled"):
         return False, None  # уже опубликован другим потоком
     d = db.get_one(models.Draw, id=draw_id)
+    text = d.text or ""
+    link = join_link(d.id) if config.JOIN_LINK_IN_POST else None
+    line = T(d.owner_id)["post"].get("join_link_line", "👉 {link}").format(link=link) if link else ""
+    if line:
+        limit = 4096 if d.file_type == "text" else 1024
+        if plain_len(text) + plain_len(line) + 2 <= limit:
+            text = f"{text}\n\n{line}" if text else line
+            line = ""
     try:
-        msg = send_post(d.channel_id, d.file_type, d.file_id, d.text, keyboard.join_kb(d, 0))
+        msg = send_post(d.channel_id, d.file_type, d.file_id, text, keyboard.join_kb(d, 0))
     except Exception as e:
         db.update(models.Draw, {"status": "draft"}, id=d.id)
         try:
@@ -316,6 +342,12 @@ def publish_draw(draw_id):
             pass
         return False, str(e)
     db.update(models.Draw, {"message_id": msg.message_id, "shown_count": 0}, id=d.id)
+    if line:  # ссылка не влезла в подпись — отправляем отдельным сообщением
+        try:
+            bot.send_message(d.channel_id, line, reply_to_message_id=msg.message_id,
+                             disable_web_page_preview=True)
+        except Exception:
+            pass
     return True, post_link(db.get_one(models.Draw, id=d.id))
 
 

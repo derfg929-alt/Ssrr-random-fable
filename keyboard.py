@@ -3,7 +3,6 @@ import telebot
 from tool import T, ikb, short, fmt_dt, user_tz
 
 PAGE_SIZE = 8
-TZ_BUTTONS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]  # часы
 
 
 # ---- Reply-клавиатуры ----
@@ -11,8 +10,8 @@ def main_menu(user_id):
     b = T(user_id)["menu"]["buttons"]
     kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(b["create"], b["my"])
-    kb.row(b["channels"], b["tz"])
-    kb.row(b["lang"], b["support"], b["invite"])
+    kb.row(b["channels"], b["lang"])
+    kb.row(b["support"], b["invite"])
     return kb
 
 
@@ -149,16 +148,3 @@ def card_kb(user_id, d, link=None):
     rows.append([(b["back"], "lst:0")])
     return ikb(rows)
 
-
-# ---- Часовой пояс ----
-def tz_kb(user_id):
-    t = T(user_id)["tz"]
-    rows, row = [[(t["msk"], "tz:180")]], []
-    for h in TZ_BUTTONS:
-        row.append((f"UTC{'+' if h >= 0 else '-'}{abs(h)}", f"tz:{h * 60}"))
-        if len(row) == 4:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    return ikb(rows)

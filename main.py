@@ -12,7 +12,7 @@ import models
 from app import bot, db, fsm
 from models import utcnow
 from tool import (BACK_LABELS, MENU_ACTIONS, MENU_LABELS, NOW_LABELS, SKIP_LABELS, T, ensure_user,
-                  esc, fmt_dt, get_user, html_text, ikb, parse_local_time, parse_tz, plain_len,
+                  esc, fmt_dt, get_user, html_text, ikb, parse_local_time, plain_len, short,
                   tz_name, user_tz)
 
 
@@ -319,6 +319,12 @@ def quick_choice(call, cmd, p):
 def start(message):
     fsm.remove_state(message.chat.id)
     ensure_user(message.from_user)
+    parts = (message.text or "").split(maxsplit=1)
+    payload = parts[1].strip() if len(parts) > 1 else ""
+    if payload.startswith("join_"):
+        text, _ = middleware.join_draw_by_id(message.from_user, payload[5:])
+        return bot.send_message(message.chat.id, text, reply_markup=keyboard.main_menu(message.chat.id),
+                                disable_web_page_preview=True)
     send_menu(message.chat.id)
 
 
@@ -334,14 +340,6 @@ def m_my(m):
     show_list(m.chat.id, 0)
 
 
-def m_tz(m):
-    uid = m.chat.id
-    tz = user_tz(uid)
-    fsm.set_state(uid, "tz_input")
-    bot.send_message(uid, T(uid)["tz"]["prompt"].format(tz=tz_name(tz, uid), now=fmt_dt(utcnow(), tz)),
-                     reply_markup=keyboard.tz_kb(uid))
-
-
 def m_lang(m):
     uid = m.chat.id
     user = get_user(uid)
@@ -355,10 +353,16 @@ def m_support(m):
 
 
 def m_invite(m):
-    bot.send_message(m.chat.id, T(m.chat.id)["menu"]["invite"])
+    try:
+        username = bot.get_me().username
+    except Exception:
+        username = ""
+    link = f"https://t.me/{username}" if username else "https://t.me/your_bot"
+    bot.send_message(m.chat.id, T(m.chat.id)["menu"]["invite"].format(link=link),
+                     disable_web_page_preview=True)
 
 
-MENU_HANDLERS = {"create": m_create, "my": m_my, "channels": m_channels, "tz": m_tz,
+MENU_HANDLERS = {"create": m_create, "my": m_my, "channels": m_channels,
                  "lang": m_lang, "support": m_support, "invite": m_invite}
 
 
@@ -487,18 +491,7 @@ def h_sub_add(m, t, data, state):
     middleware.show_subs(uid, d.id)
 
 
-def h_tz(m, t, data, state):
-    uid = m.chat.id
-    minutes = parse_tz(m.text if m.content_type == "text" else "")
-    if minutes is None:
-        return bot.send_message(uid, t["tz"]["bad"])
-    db.update(models.User, {"tz_offset": minutes}, user_id=str(uid))
-    fsm.remove_state(uid)
-    bot.send_message(uid, t["tz"]["saved"].format(tz=tz_name(minutes, uid), now=fmt_dt(utcnow(), minutes)),
-                     reply_markup=keyboard.main_menu(uid))
-
-
-STATE_HANDLERS = {"c_chat": h_chat, "e_input": h_edit, "s_add": h_sub_add, "tz_input": h_tz,
+STATE_HANDLERS = {"c_chat": h_chat, "e_input": h_edit, "s_add": h_sub_add,
                   **{s: h_create for s in CREATE_FLOW}}
 
 
@@ -510,6 +503,45 @@ def go_back(uid, state, data):
         middleware.show_draft(uid, draw_id, preview=False)
     elif draw_id and state == "s_add":
         middleware.show_subs(uid, draw_id)
+
+
+# ======================= РЕЗЕРВНАЯ КОПИЯ =======================
+def _is_admin(user):
+    username = (getattr(user, "username", "") or "").lower()
+    return bool((username and username == config.ADMIN_USERNAME) or str(user.id) in config.ADMIN_IDS)
+
+
+@bot.message_handler(commands=["backup"], func=lambda m: m.chat.type == "private")
+def cmd_backup(message):
+    if not _is_admin(message.from_user):
+        return
+    try:
+        with open(db.path, "rb") as f:
+            bot.send_document(message.chat.id, f, visible_file_name="bot_data.json",
+                              caption="💾 Резервная копия данных")
+    except Exception:
+        traceback.print_exc()
+
+
+def _restore_command(m):
+    words = (m.caption or "").split()
+    return bool(words) and words[0].split("@")[0] == "/restore"
+
+
+@bot.message_handler(content_types=["document"],
+                     func=lambda m: m.chat.type == "private" and _restore_command(m))
+def cmd_restore(message):
+    if not _is_admin(message.from_user):
+        return
+    try:
+        info = bot.get_file(message.document.file_id)
+        raw = json.loads(bot.download_file(info.file_path).decode("utf-8"))
+        db.replace_all(raw)
+        bot.send_message(message.chat.id, "✅ Данные восстановлены из резервной копии.")
+    except Exception as e:
+        traceback.print_exc()
+        bot.send_message(message.chat.id,
+                         f"⚠️ Не удалось восстановить данные: {esc(short(str(e), 200))}")
 
 
 @bot.message_handler(content_types=["text", "photo", "document", "animation", "video"],
@@ -620,16 +652,6 @@ def route_callback(call):
     ensure_user(call.from_user)
     t = T(uid)
 
-    if cmd == "tz":
-        try:
-            minutes = int(p[1])
-        except (IndexError, ValueError):
-            return answer(call)
-        db.update(models.User, {"tz_offset": minutes}, user_id=str(uid))
-        fsm.remove_state(uid)
-        answer(call)
-        return edit_or_send(uid, call.message, t["tz"]["saved"].format(
-            tz=tz_name(minutes, uid), now=fmt_dt(utcnow(), minutes)), None)
     if cmd == "lst":
         try:
             page = int(p[1])

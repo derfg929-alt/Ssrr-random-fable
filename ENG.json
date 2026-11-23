@@ -1,12 +1,11 @@
 {
   "menu": {
     "welcome_text": "👋 Welcome to the giveaway bot!\n\nAdd the bot as a channel admin — it will appear in “My channels”, and creating a giveaway takes a couple of taps.\n\nChoose an action below.",
-    "support": "💬 Support: @your_support\nDescribe the problem and attach a screenshot.",
-    "invite": "🎁 Invite your friends!\nShare the bot link: https://t.me/your_bot",
+    "support": "💬 Support: <a href=\"https://t.me/Som_teg\">@Som_teg</a>\nDescribe the problem and attach a screenshot.",
+    "invite": "🎁 Invite your friends!\nShare the bot link: {link}",
     "buttons": {
       "create": "🎉 Create giveaway",
       "my": "📋 My giveaways",
-      "tz": "🕐 Time zone",
       "lang": "🌐 Language",
       "support": "💬 Support",
       "invite": "🎁 Invite",
@@ -148,13 +147,8 @@
     "full": "Registration is closed.",
     "joined": "✅ You are in! Good luck!",
     "not_subscribed": "Please subscribe first: {channels}",
-    "check_failed": "Could not check your subscription. Try again later."
-  },
-  "tz": {
-    "prompt": "🕐 Your time zone: {tz}\nNow: {now}\n\nMoscow time (MSK, UTC+3) is the default. Choose a button below or send an offset like UTC+3.",
-    "bad": "Could not parse the time zone. Example: UTC+3 or +3.",
-    "saved": "✅ Time zone saved: {tz}\nNow: {now}",
-    "msk": "🇷🇺 MSK (UTC+3)"
+    "check_failed": "Could not check your subscription. Try again later.",
+    "join_link_line": "👉 Join: {link}"
   },
   "channels": {
     "title": "📣 Channels where the bot is an admin\n\nPick a channel for the giveaway:",
