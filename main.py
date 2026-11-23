@@ -10,9 +10,9 @@ import keyboard
 import middleware
 import models
 from app import bot, db, fsm
+from models import utcnow
 from tool import (BACK_LABELS, MENU_ACTIONS, MENU_LABELS, NOW_LABELS, SKIP_LABELS, T, ensure_user,
-                  esc, fmt_dt, get_user, parse_local_time, parse_tz, plain_len, tz_label, user_tz,
-                  utcnow)
+                  fmt_dt, get_user, parse_local_time, parse_tz, plain_len, tz_label, user_tz)
 
 
 # ======================= ВАЛИДАТОРЫ ПОЛЕЙ =======================
@@ -441,15 +441,22 @@ def route_callback(call):
     t = T(uid)
 
     if cmd == "tz":
-        minutes = int(p[1])
+        try:
+            minutes = int(p[1])
+        except (IndexError, ValueError):
+            return answer(call)
         db.update(models.User, {"tz_offset": minutes}, user_id=str(uid))
         fsm.remove_state(uid)
         answer(call)
         return edit_or_send(uid, call.message, t["tz"]["saved"].format(
             tz=tz_label(minutes), now=fmt_dt(utcnow(), minutes)), None)
     if cmd == "lst":
+        try:
+            page = int(p[1])
+        except (IndexError, ValueError):
+            page = 0
         answer(call)
-        return show_list(uid, int(p[1]), call.message)
+        return show_list(uid, page, call.message)
 
     d = owned(call, p[1] if len(p) > 1 else "")
     if d is None:
@@ -472,7 +479,7 @@ def route_callback(call):
         answer(call)
         return bot.send_message(uid, middleware.winners_text(winners) if winners else t["post"]["no_winners"])
     if cmd == "cf":
-        action = p[2]
+        action = p[2] if len(p) > 2 else ""
         ok = {"del": d.status != "active", "fin": d.status == "active", "rr": d.status == "finished"}.get(action)
         if not ok:
             return answer(call, t["draw"]["not_editable"], True)
@@ -480,10 +487,12 @@ def route_callback(call):
         return edit_or_send(uid, call.message, t["my"]["confirm"][action].format(id=d.id),
                             keyboard.confirm_kb(uid, d.id, action))
     if cmd == "do":
+        if len(p) < 3:
+            return answer(call)
         return do_action(uid, d, p[2], call)
 
     # ---- дальше только для черновиков ----
-    if cmd == "ed" and p[2] == "open":
+    if cmd == "ed" and len(p) > 2 and p[2] == "open":
         if d.status == "scheduled":
             db.update(models.Draw, {"status": "draft"}, id=d.id, status="scheduled")
         elif d.status != "draft":
@@ -493,7 +502,7 @@ def route_callback(call):
     if d.status != "draft":
         return answer(call, t["draw"]["not_editable"], True)
 
-    if cmd == "ed" and p[2] in FIELDS:
+    if cmd == "ed" and len(p) > 2 and p[2] in FIELDS:
         answer(call)
         fsm.set_state(uid, "e_input", draw_id=d.id, field=p[2])
         return ask(uid, p[2])
@@ -510,7 +519,11 @@ def route_callback(call):
         return bot.send_message(uid, t["subs"]["prompt"], reply_markup=keyboard.back_kb(uid),
                                 disable_web_page_preview=True)
     if cmd == "subdel":
-        db.delete(models.DrawChannel, id=int(p[2]), draw_id=d.id)
+        try:
+            sub_id = int(p[2])
+        except (IndexError, ValueError):
+            return answer(call)
+        db.delete(models.DrawChannel, id=sub_id, draw_id=d.id)
         answer(call)
         return middleware.show_subs(uid, d.id, call.message)
     answer(call)

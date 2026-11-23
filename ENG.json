@@ -1,0 +1,154 @@
+{
+  "menu": {
+    "welcome_text": "👋 Welcome to the giveaway bot!\n\nCreate a giveaway in your channel, track participants and run fair draws.\n\nChoose an action below.",
+    "support": "💬 Support: @your_support\nDescribe the problem and attach a screenshot.",
+    "invite": "🎁 Invite your friends!\nShare the bot link: https://t.me/your_bot",
+    "buttons": {
+      "create": "🎉 Create giveaway",
+      "my": "📋 My giveaways",
+      "tz": "🕐 Time zone",
+      "lang": "🌐 Language",
+      "support": "💬 Support",
+      "invite": "🎁 Invite"
+    }
+  },
+  "common": {
+    "back": "⬅️ Back",
+    "menu": "🏠 Menu",
+    "ok": "✅ Done",
+    "saved": "✅ Saved",
+    "error": "⚠️ Something went wrong. Please try again.",
+    "yes": "✅ Yes",
+    "no": "❌ No",
+    "unlimited": "unlimited",
+    "none": "none",
+    "deleted": "🗑 Deleted",
+    "not_found": "Giveaway not found.",
+    "not_yours": "This is not your giveaway."
+  },
+  "status_icons": {
+    "draft": "📝",
+    "scheduled": "⏳",
+    "active": "🟢",
+    "finished": "🏁",
+    "cancelled": "🚫"
+  },
+  "status": {
+    "draft": "draft",
+    "scheduled": "scheduled",
+    "active": "active",
+    "finished": "finished",
+    "cancelled": "cancelled"
+  },
+  "draw": {
+    "skip_media": "⏭ No media",
+    "start_now_btn": "▶️ Now",
+    "editor": {
+      "start": "🕐 Start",
+      "end": "🏁 End",
+      "winners": "🏆 Winners",
+      "text": "📝 Text",
+      "media": "🖼 Media",
+      "button": "🔘 Button",
+      "subs": "📣 Subscriptions",
+      "max": "👥 Limit",
+      "publish": "🚀 Publish",
+      "delete": "🗑 Delete"
+    },
+    "prompt_chat": "Forward a post from the channel or send its @username / t.me/... link.\n\nYou must be a channel admin, and the bot must be an admin too.",
+    "prompt_text": "Send the post text. HTML markup is supported.\n\nUp to 4096 characters (or up to 1024 if you add media).",
+    "prompt_media": "Send a photo, video, GIF or document for the post. If you don't need media, tap “No media”.",
+    "prompt_winners": "How many winners? Send a number from 1 to {max}.",
+    "prompt_start": "When should the giveaway start? Send date and time as YYYY-MM-DD HH:MM in your time zone {tz}, or tap “Now”.",
+    "prompt_end": "When should the giveaway end? Send date and time as YYYY-MM-DD HH:MM in your time zone {tz}.",
+    "prompt_btn": "Send the join button text (up to 40 characters).",
+    "prompt_max": "Maximum number of participants? Send 0 for no limit.",
+    "need_text": "A text post is required.",
+    "need_media": "Send a photo, video, GIF, document or tap “No media”.",
+    "caption_too_long": "Media caption is too long: {n} of {limit} characters.",
+    "text_too_long": "Text is too long: {n} of {limit} characters.",
+    "media_caption_long": "With media the caption cannot exceed 1024 characters (currently {n}).",
+    "bad_range": "A number from 1 to {max} is required.",
+    "invalid_format_time": "Invalid time format. Example: 2026-12-31 18:00",
+    "over_time": "This time is already in the past.",
+    "end_before_start": "The end must be later than the start.",
+    "button_too_long": "Button text must be 1 to 40 characters long.",
+    "bad_max": "A number from 0 to 1,000,000 is required.",
+    "chat_not_found": "Could not find the channel. Forward a post, send @username or a t.me/... link.",
+    "bad_chat": "This is a private chat. A channel or group is required.",
+    "not_admin": "You must be an admin of this channel.",
+    "bot_not_admin": "Add the bot as a channel admin and try again.",
+    "bot_cant_post": "The bot has no permission to post in this channel.",
+    "preview_failed": "Could not show the preview: {err}",
+    "not_editable": "This giveaway cannot be changed in its current status.",
+    "scheduled": "🕐 The giveaway is scheduled for {start} ({tz}).",
+    "published": "🚀 The giveaway has been published!",
+    "summary": {
+      "title": "Giveaway #{id} — {status}",
+      "channel": "Channel",
+      "start": "Start",
+      "end": "End",
+      "tz": "Time zone",
+      "winners": "Winners",
+      "max": "Participant limit",
+      "button": "Button",
+      "subs": "Extra subscriptions",
+      "players": "Participants",
+      "on_publish": "right after publishing"
+    }
+  },
+  "subs": {
+    "add": "➕ Add channel",
+    "done": "✅ Done",
+    "empty": "none",
+    "title": "📣 Required subscriptions for giveaway #{id}\n\nMain channel: {main}\nExtra (max {limit}):\n{list}",
+    "prompt": "Forward a post from the channel or send its @username / t.me/... link that users must subscribe to.",
+    "added": "✅ Channel added.",
+    "dup": "This channel is already added.",
+    "limit": "You can add at most {n} channels."
+  },
+  "my": {
+    "no_draws": "You have no giveaways yet. Tap “Create giveaway” to start.",
+    "list_title": "📋 Your giveaways — page {page} of {pages}",
+    "working": "⏳ Working...",
+    "no_players": "No participants yet.",
+    "players_caption": "Participants of giveaway #{id}: {n}",
+    "btn": {
+      "edit": "✏️ Edit",
+      "delete": "🗑 Delete",
+      "players": "👥 Participants",
+      "finish": "🏁 Finish",
+      "winners": "🏆 Winners",
+      "reroll": "🔄 Redraw",
+      "link": "🔗 Link",
+      "back": "⬅️ To list"
+    },
+    "confirm": {
+      "del": "Delete giveaway #{id}? This cannot be undone.",
+      "fin": "Finish giveaway #{id} and pick winners?",
+      "rr": "Redraw giveaway #{id}? Winners will be picked again."
+    }
+  },
+  "post": {
+    "join_default": "🎉 Join",
+    "finished_button": "🏁 Finished ({n})",
+    "winners_title": "🏆 Winners:",
+    "reroll_title": "🔄 New winners:",
+    "no_winners": "😔 No participants — no winners were picked.",
+    "owner_report": "Giveaway #{id} in channel {channel} has finished.\nParticipants: {n}\nWinners:\n{winners}",
+    "announce_failed": "⚠️ Could not publish the results to the channel. Check the bot permissions.",
+    "winner_dm": "🎉 Congratulations! You won the giveaway in channel {channel}.",
+    "finished": "The giveaway is already finished.",
+    "failed_post": "⚠️ Could not publish giveaway #{id} to channel {channel}.\nError: {err}",
+    "already": "You are already participating.",
+    "full": "Registration is closed.",
+    "joined": "✅ You are in! Good luck!",
+    "not_subscribed": "Please subscribe first: {channels}",
+    "check_failed": "Could not check your subscription. Try again later."
+  },
+  "tz": {
+    "prompt": "🕐 Your time zone: {tz}\nNow: {now}\n\nChoose a button below or send an offset like UTC+3.",
+    "bad": "Could not parse the time zone. Example: UTC+3 or +3.",
+    "saved": "✅ Time zone saved: {tz}\nNow: {now}"
+  }
+}

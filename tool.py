@@ -9,7 +9,6 @@ import telebot
 import config
 import models
 from app import db
-from models import utcnow  # noqa: F401  (реэкспорт)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
