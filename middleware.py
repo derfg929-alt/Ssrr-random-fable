@@ -14,7 +14,8 @@ import config
 import keyboard
 import models
 from app import bot, db
-from tool import T, esc, fmt_dt, ikb, lang_of, short, tz_label, user_tz, utcnow
+from models import utcnow
+from tool import T, esc, fmt_dt, ikb, short, tz_label, user_tz
 
 OK_STATUSES = ("member", "administrator", "creator")
 _bot_id = None
