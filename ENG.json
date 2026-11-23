@@ -1,6 +1,6 @@
 {
   "menu": {
-    "welcome_text": "👋 Welcome to the giveaway bot!\n\nCreate a giveaway in your channel, track participants and run fair draws.\n\nChoose an action below.",
+    "welcome_text": "👋 Welcome to the giveaway bot!\n\nAdd the bot as a channel admin — it will appear in “My channels”, and creating a giveaway takes a couple of taps.\n\nChoose an action below.",
     "support": "💬 Support: @your_support\nDescribe the problem and attach a screenshot.",
     "invite": "🎁 Invite your friends!\nShare the bot link: https://t.me/your_bot",
     "buttons": {
@@ -9,7 +9,8 @@
       "tz": "🕐 Time zone",
       "lang": "🌐 Language",
       "support": "💬 Support",
-      "invite": "🎁 Invite"
+      "invite": "🎁 Invite",
+      "channels": "📣 My channels"
     }
   },
   "common": {
@@ -24,7 +25,8 @@
     "none": "none",
     "deleted": "🗑 Deleted",
     "not_found": "Giveaway not found.",
-    "not_yours": "This is not your giveaway."
+    "not_yours": "This is not your giveaway.",
+    "stale": "This button is outdated. Open the step again."
   },
   "status_icons": {
     "draft": "📝",
@@ -59,8 +61,8 @@
     "prompt_text": "Send the post text. HTML markup is supported.\n\nUp to 4096 characters (or up to 1024 if you add media).",
     "prompt_media": "Send a photo, video, GIF or document for the post. If you don't need media, tap “No media”.",
     "prompt_winners": "How many winners? Send a number from 1 to {max}.",
-    "prompt_start": "When should the giveaway start? Send date and time as YYYY-MM-DD HH:MM in your time zone {tz}, or tap “Now”.",
-    "prompt_end": "When should the giveaway end? Send date and time as YYYY-MM-DD HH:MM in your time zone {tz}.",
+    "prompt_start": "When should the giveaway start? Send date and time, e.g. 31.12 18:00, in your time zone {tz}, or tap “Now”.",
+    "prompt_end": "When should the giveaway end? Send date and time, e.g. 31.12 18:00 ({tz}), or pick a quick option.",
     "prompt_btn": "Send the join button text (up to 40 characters).",
     "prompt_max": "Maximum number of participants? Send 0 for no limit.",
     "need_text": "A text post is required.",
@@ -69,7 +71,7 @@
     "text_too_long": "Text is too long: {n} of {limit} characters.",
     "media_caption_long": "With media the caption cannot exceed 1024 characters (currently {n}).",
     "bad_range": "A number from 1 to {max} is required.",
-    "invalid_format_time": "Invalid time format. Example: 2026-12-31 18:00",
+    "invalid_format_time": "Invalid time format. Example: 31.12 18:00",
     "over_time": "This time is already in the past.",
     "end_before_start": "The end must be later than the start.",
     "button_too_long": "Button text must be 1 to 40 characters long.",
@@ -105,7 +107,9 @@
     "prompt": "Forward a post from the channel or send its @username / t.me/... link that users must subscribe to.",
     "added": "✅ Channel added.",
     "dup": "This channel is already added.",
-    "limit": "You can add at most {n} channels."
+    "limit": "You can add at most {n} channels.",
+    "pick": "📣 Pick a channel users must subscribe to:",
+    "no_more": "No channels available to add. Add the bot as an admin to the channel and tap “🔄 Refresh”."
   },
   "my": {
     "no_draws": "You have no giveaways yet. Tap “Create giveaway” to start.",
@@ -147,8 +151,35 @@
     "check_failed": "Could not check your subscription. Try again later."
   },
   "tz": {
-    "prompt": "🕐 Your time zone: {tz}\nNow: {now}\n\nChoose a button below or send an offset like UTC+3.",
+    "prompt": "🕐 Your time zone: {tz}\nNow: {now}\n\nMoscow time (MSK, UTC+3) is the default. Choose a button below or send an offset like UTC+3.",
     "bad": "Could not parse the time zone. Example: UTC+3 or +3.",
-    "saved": "✅ Time zone saved: {tz}\nNow: {now}"
+    "saved": "✅ Time zone saved: {tz}\nNow: {now}",
+    "msk": "🇷🇺 MSK (UTC+3)"
+  },
+  "channels": {
+    "title": "📣 Channels where the bot is an admin\n\nPick a channel for the giveaway:",
+    "empty": "📣 The bot does not see any channels yet.\n\n1. Add the bot as a channel admin (with permission to post messages).\n2. Tap “🔄 Refresh”.\n\nYou can also send the channel @username or forward a post from it.",
+    "refresh": "🔄 Refresh",
+    "manual": "✍️ Enter manually",
+    "how": "Add the bot as a channel admin: Channel settings → Administrators → Add → pick the bot → enable “Post messages”. After that the channel appears here automatically.",
+    "not_admin": "You are not an admin of this channel.",
+    "added": "✅ Channel “{title}” is connected. It is now available for giveaways.",
+    "create_btn": "🎉 Create giveaway"
+  },
+  "quick": {
+    "now": "▶️ Now",
+    "custom": "✍️ Custom value",
+    "h1": "1 hour",
+    "h6": "6 hours",
+    "h12": "12 hours",
+    "d1": "1 day",
+    "d3": "3 days",
+    "d7": "7 days",
+    "d30": "30 days",
+    "custom_winners": "Send the number of winners from 1 to {max}.",
+    "custom_start": "Send the start date and time, e.g. 31.12 18:00 ({tz}).",
+    "custom_end": "Send the end date and time, e.g. 31.12 18:00 ({tz}).",
+    "no_limit": "∞ No limit",
+    "custom_max": "Send the participant limit (0 for no limit)."
   }
 }

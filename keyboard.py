@@ -11,8 +11,8 @@ def main_menu(user_id):
     b = T(user_id)["menu"]["buttons"]
     kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(b["create"], b["my"])
-    kb.row(b["tz"], b["lang"])
-    kb.row(b["support"], b["invite"])
+    kb.row(b["channels"], b["tz"])
+    kb.row(b["lang"], b["support"], b["invite"])
     return kb
 
 
@@ -30,12 +30,52 @@ def media_kb(user_id):
     return kb
 
 
-def start_kb(user_id):
-    t = T(user_id)
-    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(t["draw"]["start_now_btn"])
-    kb.row(t["common"]["back"])
-    return kb
+# ---- Каналы (автообнаружение) ----
+def channels_kb(user_id, chats, mode="create", draw_id=None):
+    """chats = [(BotChat, is_user_admin), ...]"""
+    t = T(user_id)["channels"]
+    rows = []
+    for chat, is_admin in chats:
+        title = short(chat.title or chat.chat_id, 40)
+        if is_admin:
+            data = f"ch:{chat.chat_id}" if mode == "create" else f"sub:{draw_id}:{chat.chat_id}"
+            rows.append([(f"✅ {title}", data)])
+        else:
+            rows.append([(f"🔒 {title}", f"chn:{chat.chat_id}")])
+    if mode == "create":
+        rows.append([(t["refresh"], "chr"), (t["manual"], "chm")])
+    else:
+        rows.append([(t["refresh"], f"chrs:{draw_id}"), (t["manual"], f"subm:{draw_id}")])
+    return ikb(rows)
+
+
+# ---- Быстрые кнопки мастера ----
+QUICK_WINNERS = (1, 2, 3, 5, 10, 25, 50, 100)
+QUICK_MAX = (0, 10, 50, 100, 500, 1000)
+QUICK_END = (("h1", 60), ("h6", 360), ("h12", 720),
+             ("d1", 1440), ("d3", 4320), ("d7", 10080), ("d30", 43200))
+
+
+def quick_kb(user_id, field, draw_id=None):
+    t = T(user_id)["quick"]
+    i = draw_id or 0
+    if field == "winners":
+        rows = [[(str(n), f"qw:{i}:{n}") for n in QUICK_WINNERS[j:j + 4]]
+                for j in range(0, len(QUICK_WINNERS), 4)]
+        rows.append([(t["custom"], f"qwc:{i}")])
+    elif field == "max":
+        rows = [[(t["no_limit"] if n == 0 else str(n), f"qm:{i}:{n}") for n in QUICK_MAX[j:j + 3]]
+                for j in range(0, len(QUICK_MAX), 3)]
+        rows.append([(t["custom"], f"qmc:{i}")])
+    elif field == "start":
+        rows = [[(t["now"], f"qs:{i}:now")], [(t["custom"], f"qsc:{i}")]]
+    elif field == "end":
+        rows = [[(t[key], f"qe:{i}:{minutes}") for key, minutes in QUICK_END[j:j + 3]]
+                for j in range(0, len(QUICK_END), 3)]
+        rows.append([(t["custom"], f"qec:{i}")])
+    else:
+        return None
+    return ikb(rows)
 
 
 # ---- Кнопка под постом в канале ----
@@ -111,8 +151,9 @@ def card_kb(user_id, d, link=None):
 
 
 # ---- Часовой пояс ----
-def tz_kb():
-    rows, row = [], []
+def tz_kb(user_id):
+    t = T(user_id)["tz"]
+    rows, row = [[(t["msk"], "tz:180")]], []
     for h in TZ_BUTTONS:
         row.append((f"UTC{'+' if h >= 0 else '-'}{abs(h)}", f"tz:{h * 60}"))
         if len(row) == 4:

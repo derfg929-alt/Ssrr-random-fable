@@ -91,3 +91,16 @@ class UserState(Base):
     user_id = Column(String, primary_key=True)
     state = Column(String)
     data = Column(Text, default="{}")
+
+
+class BotChat(Base):
+    """Каналы/группы, куда добавлен бот. Заполняется автоматически из updates."""
+    __tablename__ = "bot_chats"
+    chat_id = Column(String, primary_key=True)
+    title = Column(String)
+    username = Column(String)
+    type = Column(String, default="channel")   # channel / supergroup / group
+    can_post = Column(Integer, default=0)
+    added_by = Column(String)
+    added_at = Column(DateTime, default=utcnow)
+    seen_at = Column(DateTime, default=utcnow)
