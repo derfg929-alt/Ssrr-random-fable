@@ -20,6 +20,9 @@ JOIN_LINK_IN_POST = os.getenv("JOIN_LINK_IN_POST", "1").lower() not in ("0", "fa
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Som_teg").lstrip("@").lower()
 ADMIN_IDS = {x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()}
 
+# Кому доступна команда «пользователи» (число зарегистрированных и список юзернеймов)
+USERS_ADMIN_ID = os.getenv("USERS_ADMIN_ID", "8039111975").strip()
+
 # Автоматически запоминать каналы, куда бот добавлен администратором
 AUTO_DETECT_CHANNELS = os.getenv("AUTO_DETECT_CHANNELS", "1").lower() not in ("0", "false", "no", "off")
 

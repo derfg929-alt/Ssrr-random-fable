@@ -112,6 +112,16 @@ def confirm_kb(user_id, draw_id, action):
     return ikb([[(c["yes"], f"do:{draw_id}:{action}"), (c["no"], f"v:{draw_id}")]])
 
 
+# ---- Пользователи бота (только для владельца) ----
+def users_kb(page, pages):
+    nav = []
+    if page > 0:
+        nav.append(("◀️", f"usr:{page - 1}"))
+    if page + 1 < pages:
+        nav.append(("▶️", f"usr:{page + 1}"))
+    return ikb([nav] if nav else [])
+
+
 # ---- Мои розыгрыши ----
 def list_kb(user_id, draws, page, total):
     t = T(user_id)
