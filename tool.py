@@ -42,12 +42,17 @@ def get_user(user_id):
 
 def ensure_user(tg_user):
     user = get_user(tg_user.id)
+    username = getattr(tg_user, "username", "") or ""
     if user:
+        if username and user.username != username:
+            db.update(models.User, {"username": username}, user_id=str(tg_user.id))
+            user.username = username
         return user
     code = (getattr(tg_user, "language_code", None) or "en").split("-")[0].lower()
     try:
         return db.new(models.User, user_id=str(tg_user.id),
                       user_name=tg_user.username or tg_user.first_name or "",
+                      username=username,
                       language="RU" if code in RU_CODES else "ENG",
                       tz_offset=config.DEFAULT_TZ)
     except Exception:  # параллельный /start

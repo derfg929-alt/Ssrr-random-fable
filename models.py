@@ -62,6 +62,7 @@ class User(Model):
     __pk__ = ("user_id",)
     user_id = Field()
     user_name = Field()
+    username = Field("")                        # без @, обновляется при каждом сообщении
     language = Field("RU")
     tz_offset = Field(config.DEFAULT_TZ)  # минуты от UTC, оставлено для совместимости
 

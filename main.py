@@ -194,6 +194,51 @@ def show_card(uid, d, message=None):
     edit_or_send(uid, message, middleware.draw_summary(uid, d), keyboard.card_kb(uid, d, link))
 
 
+# ======================= ПОЛЬЗОВАТЕЛИ БОТА (ТОЛЬКО ВЛАДЕЛЕЦ) =======================
+USERS_PAGE_SIZE = 30
+USERS_LABELS = {"пользователи", "пользватели", "пользователь", "users", "юзеры"}
+
+
+def _users_command(m):
+    if m.chat.type != "private" or m.content_type != "text":
+        return False
+    words = (m.text or "").strip().lower().split()
+    if not words:
+        return False
+    return words[0].split("@")[0].lstrip("/").strip(".,!?") in USERS_LABELS
+
+
+def _user_label(u):
+    if u.username:
+        return f"@{u.username}"
+    name = (u.user_name or "").strip()
+    return f"{name} · id {u.user_id}" if name else f"id {u.user_id}"
+
+
+def show_users(uid, page=0, message=None):
+    users = db.select_all(models.User, order_by=models.User.user_id.asc())
+    if not users:
+        return edit_or_send(uid, message, "👥 Пользователей пока нет.", None)
+    pages = (len(users) + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE
+    page = max(0, min(page, pages - 1))
+    start = page * USERS_PAGE_SIZE
+    chunk = users[start:start + USERS_PAGE_SIZE]
+    lines = [f"👥 Всего пользователей: <b>{len(users)}</b>", f"Страница {page + 1}/{pages}", ""]
+    lines += [f"{start + i + 1}. {esc(_user_label(u))}" for i, u in enumerate(chunk)]
+    return edit_or_send(uid, message, "\n".join(lines), keyboard.users_kb(page, pages))
+
+
+@bot.message_handler(func=_users_command)
+def cmd_users(message):
+    if str(message.from_user.id) != config.USERS_ADMIN_ID:
+        return
+    ensure_user(message.from_user)
+    total = db.count(models.User)
+    pages = max(1, (total + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE)
+    bot.send_message(message.chat.id, f"👥 Пользователей бота: <b>{total}</b>",
+                     reply_markup=keyboard.users_kb(0, pages))
+
+
 # ======================= КАНАЛЫ =======================
 def show_channels(uid, message=None):
     t = T(uid)["channels"]
@@ -651,6 +696,16 @@ def route_callback(call):
         return answer(call, T(uid, call.from_user.language_code)["post"]["finished"], True)
     ensure_user(call.from_user)
     t = T(uid)
+
+    if cmd == "usr":
+        if str(uid) != config.USERS_ADMIN_ID:
+            return answer(call)
+        try:
+            page = int(p[1])
+        except (IndexError, ValueError):
+            page = 0
+        answer(call)
+        return show_users(uid, page, call.message)
 
     if cmd == "lst":
         try:
