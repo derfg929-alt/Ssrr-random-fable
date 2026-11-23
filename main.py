@@ -12,7 +12,8 @@ import models
 from app import bot, db, fsm
 from models import utcnow
 from tool import (BACK_LABELS, MENU_ACTIONS, MENU_LABELS, NOW_LABELS, SKIP_LABELS, T, ensure_user,
-                  fmt_dt, get_user, parse_local_time, parse_tz, plain_len, tz_label, user_tz)
+                  esc, fmt_dt, get_user, html_text, ikb, parse_local_time, parse_tz, plain_len,
+                  tz_name, user_tz)
 
 
 # ======================= ВАЛИДАТОРЫ ПОЛЕЙ =======================
@@ -32,23 +33,29 @@ def v_text(m, t, ctx):
     limit, n = (1024 if long_ else 4096), len(m.text)
     if n > limit:
         return None, t["caption_too_long" if long_ else "text_too_long"].format(n=n, limit=limit)
-    return {"text": m.html_text}, None  # html_text сохраняет жирный/курсив/ссылки
+    return {"text": html_text(m)}, None  # html_text сохраняет жирный/курсив/ссылки
+
+
+def _media_val(m):
+    ct = m.content_type
+    if ct == "photo":
+        return "photo", m.photo[-1].file_id  # [-1] = максимальное качество
+    if ct == "animation":
+        return "animation", m.animation.file_id
+    if ct == "video":
+        return "video", m.video.file_id
+    if ct == "document":
+        return "document", m.document.file_id
+    return None
 
 
 def v_media(m, t, ctx):
-    ct = m.content_type
-    if ct == "photo":
-        val = ("photo", m.photo[-1].file_id)  # [-1] = максимальное качество
-    elif ct == "animation":
-        val = ("animation", m.animation.file_id)
-    elif ct == "video":
-        val = ("video", m.video.file_id)
-    elif ct == "document":
-        val = ("document", m.document.file_id)
-    elif ct == "text" and m.text in SKIP_LABELS:
-        val = ("text", "")
-    else:
-        return None, t["need_media"]
+    val = _media_val(m)
+    if val is None:
+        if m.content_type == "text" and m.text in SKIP_LABELS:
+            val = ("text", "")
+        else:
+            return None, t["need_media"]
     n = plain_len(ctx.get("text"))
     if val[0] != "text" and n > 1024:
         return None, t["media_caption_long"].format(n=n)
@@ -130,18 +137,19 @@ def make_ctx(uid, data):
     return ctx
 
 
-def kb_for(uid, field):
+def kb_for(uid, field, draw_id=None):
     if field == "media":
         return keyboard.media_kb(uid)
-    if field == "start":
-        return keyboard.start_kb(uid)
+    quick = keyboard.quick_kb(uid, field, draw_id)
+    if quick is not None:
+        return quick
     return keyboard.back_kb(uid)
 
 
-def ask(uid, field):
+def ask(uid, field, draw_id=None):
     t = T(uid)["draw"]
-    bot.send_message(uid, t[FIELDS[field][1]].format(tz=tz_label(user_tz(uid)), max=config.MAX_WINNERS),
-                     reply_markup=kb_for(uid, field), disable_web_page_preview=True)
+    bot.send_message(uid, t[FIELDS[field][1]].format(tz=tz_name(user_tz(uid), uid), max=config.MAX_WINNERS),
+                     reply_markup=kb_for(uid, field, draw_id), disable_web_page_preview=True)
 
 
 # ======================= ОБЩЕЕ =======================
@@ -186,6 +194,126 @@ def show_card(uid, d, message=None):
     edit_or_send(uid, message, middleware.draw_summary(uid, d), keyboard.card_kb(uid, d, link))
 
 
+# ======================= КАНАЛЫ =======================
+def show_channels(uid, message=None):
+    t = T(uid)["channels"]
+    chats = middleware.available_channels(uid)
+    edit_or_send(uid, message, t["title"] if chats else t["empty"],
+                 keyboard.channels_kb(uid, chats, "create"))
+
+
+def begin_create(uid, chat_id, call=None):
+    t = T(uid)
+    chat, err = middleware.verify_channel_for_user(uid, chat_id)
+    if err:
+        if call:
+            return answer(call, t["draw"][err], True)
+        return bot.send_message(uid, t["draw"][err], reply_markup=keyboard.main_menu(uid))
+    if call:
+        answer(call)
+        _clear_buttons(uid, call)
+    fsm.set_state(uid, "c_text", channel_id=str(chat.id), channel_name=chat.title or "",
+                  channel_username=chat.username or "")
+    ask(uid, "text")
+
+
+def show_sub_channels(uid, draw_id, message=None):
+    d = db.get_one(models.Draw, id=draw_id)
+    if not d:
+        return
+    t = T(uid)["subs"]
+    existing = {c.channel_id for c in db.select_all(models.DrawChannel, draw_id=d.id)}
+    existing.add(str(d.channel_id))
+    chats = [(c, ok) for c, ok in middleware.available_channels(uid) if c.chat_id not in existing]
+    edit_or_send(uid, message, t["pick"] if chats else t["no_more"],
+                 keyboard.channels_kb(uid, chats, "subs", d.id))
+
+
+def notify_channel_added(chat, uid):
+    t = T(uid)["channels"]
+    try:
+        bot.send_message(uid, t["added"].format(title=esc(chat.title or chat.id)),
+                         reply_markup=ikb([[(t["create_btn"], f"ch:{chat.id}")]]),
+                         disable_web_page_preview=True)
+    except Exception:
+        pass
+
+
+def _clear_buttons(uid, call):
+    try:
+        bot.edit_message_reply_markup(uid, call.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+
+
+def _quick_values(field, p, start_at=None):
+    if field == "winners":
+        n = int(p[2])
+        if not 1 <= n <= config.MAX_WINNERS:
+            raise ValueError
+        return {"winners_count": n}
+    if field == "max":
+        n = int(p[2])
+        if not 0 <= n <= 1_000_000:
+            raise ValueError
+        return {"max_players": n}
+    if field == "start":
+        return {"start_at": None}
+    minutes = int(p[2])
+    if minutes <= 0:
+        raise ValueError
+    now = utcnow()
+    base = start_at if (start_at and start_at > now) else now
+    return {"end_at": base + timedelta(minutes=minutes)}
+
+
+def quick_choice(call, cmd, p):
+    uid = call.from_user.id
+    t = T(uid)
+    q = t["quick"]
+    try:
+        draw_id = int(p[1])
+    except (IndexError, ValueError):
+        return answer(call)
+    if cmd in ("qwc", "qmc", "qsc", "qec"):
+        hint = {"qwc": q["custom_winners"].format(max=config.MAX_WINNERS),
+                "qmc": q["custom_max"],
+                "qsc": q["custom_start"].format(tz=tz_name(user_tz(uid), uid)),
+                "qec": q["custom_end"].format(tz=tz_name(user_tz(uid), uid))}[cmd]
+        return answer(call, hint, True)
+    field = {"qw": "winners", "qm": "max", "qs": "start", "qe": "end"}[cmd]
+    if draw_id == 0:
+        state, data = fsm.get_state(uid)
+        if state != f"c_{field}":
+            return answer(call, t["common"]["stale"], True)
+        ctx = make_ctx(uid, data)
+        try:
+            values = _quick_values(field, p, ctx.get("start_at"))
+        except (IndexError, ValueError):
+            return answer(call)
+        answer(call)
+        _clear_buttons(uid, call)
+        return advance_create(uid, data, field, values)
+
+    d = owned(call, str(draw_id))
+    if d is None:
+        return
+    if d.status != "draft":
+        return answer(call, t["draw"]["not_editable"], True)
+    try:
+        values = _quick_values(field, p, d.start_at)
+    except (IndexError, ValueError):
+        return answer(call)
+    if field == "end" and values["end_at"] <= utcnow():
+        return answer(call, t["draw"]["over_time"], True)
+    answer(call)
+    _clear_buttons(uid, call)
+    db.update(models.Draw, values, id=d.id)
+    fsm.remove_state(uid)
+    bot.send_message(uid, t["common"]["saved"], reply_markup=keyboard.main_menu(uid))
+    middleware.show_draft(uid, d.id)
+
+
 # ======================= КОМАНДЫ И МЕНЮ =======================
 @bot.message_handler(commands=["start", "menu", "cancel"], func=lambda m: m.chat.type == "private")
 def start(message):
@@ -195,10 +323,11 @@ def start(message):
 
 
 def m_create(m):
-    uid = m.chat.id
-    fsm.set_state(uid, "c_chat")
-    bot.send_message(uid, T(uid)["draw"]["prompt_chat"], reply_markup=keyboard.back_kb(uid),
-                     disable_web_page_preview=True)
+    show_channels(m.chat.id)
+
+
+def m_channels(m):
+    show_channels(m.chat.id)
 
 
 def m_my(m):
@@ -209,8 +338,8 @@ def m_tz(m):
     uid = m.chat.id
     tz = user_tz(uid)
     fsm.set_state(uid, "tz_input")
-    bot.send_message(uid, T(uid)["tz"]["prompt"].format(tz=tz_label(tz), now=fmt_dt(utcnow(), tz)),
-                     reply_markup=keyboard.tz_kb())
+    bot.send_message(uid, T(uid)["tz"]["prompt"].format(tz=tz_name(tz, uid), now=fmt_dt(utcnow(), tz)),
+                     reply_markup=keyboard.tz_kb(uid))
 
 
 def m_lang(m):
@@ -229,28 +358,70 @@ def m_invite(m):
     bot.send_message(m.chat.id, T(m.chat.id)["menu"]["invite"])
 
 
-MENU_HANDLERS = {"create": m_create, "my": m_my, "tz": m_tz, "lang": m_lang,
-                 "support": m_support, "invite": m_invite}
+MENU_HANDLERS = {"create": m_create, "my": m_my, "channels": m_channels, "tz": m_tz,
+                 "lang": m_lang, "support": m_support, "invite": m_invite}
+
+
+# ======================= АВТООБНАРУЖЕНИЕ КАНАЛОВ =======================
+@bot.my_chat_member_handler()
+def on_my_chat_member(update):
+    try:
+        chat = update.chat
+        if chat.type == "private":
+            return
+        status = update.new_chat_member.status
+        if status in ("left", "kicked"):
+            middleware.forget_chat(chat.id)
+            return
+        can_post = bool(getattr(update.new_chat_member, "can_post_messages", False))
+        user = getattr(update, "from_user", None)
+        middleware.remember_chat(chat, getattr(user, "id", None), can_post=can_post)
+        if status in ("administrator", "creator") and user and not user.is_bot:
+            notify_channel_added(chat, user.id)
+    except Exception:
+        traceback.print_exc()
+
+
+@bot.channel_post_handler(func=lambda m: True)
+def on_channel_post(m):
+    try:
+        middleware.remember_chat(m.chat, None, can_post=True)
+    except Exception:
+        traceback.print_exc()
 
 
 # ======================= ШАГИ (FSM) =======================
+def _is_forward(m):
+    return bool(getattr(m, "forward_origin", None) or getattr(m, "forward_from_chat", None))
+
+
 def h_chat(m, t, data, state):
     uid = m.chat.id
     chat, err = middleware.resolve_chat(m, uid)
     if err:
         return bot.send_message(uid, t["draw"][err], reply_markup=keyboard.back_kb(uid))
-    fsm.set_state(uid, "c_text", channel_id=str(chat.id), channel_name=chat.title or "",
-                  channel_username=chat.username or "")
-    ask(uid, "text")
+    payload = {"channel_id": str(chat.id), "channel_name": chat.title or "",
+               "channel_username": chat.username or ""}
+    field = "text"
+    if _is_forward(m):  # пересланный пост сразу становится текстом/медиа розыгрыша
+        text = html_text(m)
+        if text and plain_len(text) <= 4096:
+            payload["text"] = text
+            field = "media"
+        media = _media_val(m)
+        if media:
+            if payload.get("text") and plain_len(payload["text"]) > 1024:
+                field = "media"
+            else:
+                payload["file_type"], payload["file_id"] = media
+                field = "winners" if payload.get("text") else "text"
+    fsm.set_state(uid, f"c_{field}", **payload)
+    ask(uid, field)
 
 
-def h_create(m, t, data, state):
-    uid = m.chat.id
-    field = FIELD_OF[state]
-    values, err = FIELDS[field][0](m, t["draw"], make_ctx(uid, data))
-    if err:
-        return bot.send_message(uid, err, reply_markup=kb_for(uid, field))
+def advance_create(uid, data, field, values):
     data.update(ser(values))
+    state = f"c_{field}"
     idx = CREATE_FLOW.index(state)
     if idx + 1 < len(CREATE_FLOW):
         nxt = CREATE_FLOW[idx + 1]
@@ -261,10 +432,19 @@ def h_create(m, t, data, state):
     for k in ("start_at", "end_at"):
         vals[k] = datetime.fromisoformat(vals[k]) if vals.get(k) else None
     d = db.new(models.Draw, owner_id=str(uid), status="draft",
-               button_text=t["post"]["join_default"], **vals)
+               button_text=T(uid)["post"]["join_default"], **vals)
     fsm.remove_state(uid)
-    bot.send_message(uid, t["common"]["ok"], reply_markup=keyboard.main_menu(uid))
+    bot.send_message(uid, T(uid)["common"]["ok"], reply_markup=keyboard.main_menu(uid))
     middleware.show_draft(uid, d.id)
+
+
+def h_create(m, t, data, state):
+    uid = m.chat.id
+    field = FIELD_OF[state]
+    values, err = FIELDS[field][0](m, t["draw"], make_ctx(uid, data))
+    if err:
+        return bot.send_message(uid, err, reply_markup=kb_for(uid, field))
+    advance_create(uid, data, field, values)
 
 
 def h_edit(m, t, data, state):
@@ -278,7 +458,7 @@ def h_edit(m, t, data, state):
         "file_type": d.file_type, "text": d.text, "start_at": d.start_at and d.start_at.isoformat(),
         "end_at": d.end_at and d.end_at.isoformat()}))
     if err:
-        return bot.send_message(uid, err, reply_markup=kb_for(uid, field))
+        return bot.send_message(uid, err, reply_markup=kb_for(uid, field, d.id))
     db.update(models.Draw, values, id=d.id)
     fsm.remove_state(uid)
     bot.send_message(uid, t["common"]["saved"], reply_markup=keyboard.main_menu(uid))
@@ -314,7 +494,7 @@ def h_tz(m, t, data, state):
         return bot.send_message(uid, t["tz"]["bad"])
     db.update(models.User, {"tz_offset": minutes}, user_id=str(uid))
     fsm.remove_state(uid)
-    bot.send_message(uid, t["tz"]["saved"].format(tz=tz_label(minutes), now=fmt_dt(utcnow(), minutes)),
+    bot.send_message(uid, t["tz"]["saved"].format(tz=tz_name(minutes, uid), now=fmt_dt(utcnow(), minutes)),
                      reply_markup=keyboard.main_menu(uid))
 
 
@@ -392,7 +572,7 @@ def do_publish(uid, d, call):
     answer(call)
     if start > now:
         return bot.send_message(uid, t["draw"]["scheduled"].format(
-            start=fmt_dt(start, user_tz(uid)), tz=tz_label(user_tz(uid))), reply_markup=keyboard.main_menu(uid))
+            start=fmt_dt(start, user_tz(uid)), tz=tz_name(user_tz(uid), uid)), reply_markup=keyboard.main_menu(uid))
     ok, res = middleware.publish_draw(d.id)
     if ok:
         text = t["draw"]["published"] + (f"\n{res}" if res else "")
@@ -449,7 +629,7 @@ def route_callback(call):
         fsm.remove_state(uid)
         answer(call)
         return edit_or_send(uid, call.message, t["tz"]["saved"].format(
-            tz=tz_label(minutes), now=fmt_dt(utcnow(), minutes)), None)
+            tz=tz_name(minutes, uid), now=fmt_dt(utcnow(), minutes)), None)
     if cmd == "lst":
         try:
             page = int(p[1])
@@ -457,10 +637,52 @@ def route_callback(call):
             page = 0
         answer(call)
         return show_list(uid, page, call.message)
+    if cmd == "chr":
+        answer(call)
+        return show_channels(uid, call.message)
+    if cmd == "chm":
+        answer(call)
+        fsm.set_state(uid, "c_chat")
+        return bot.send_message(uid, t["draw"]["prompt_chat"], reply_markup=keyboard.back_kb(uid),
+                                disable_web_page_preview=True)
+    if cmd == "chi":
+        return answer(call, t["channels"]["how"], True)
+    if cmd == "chn":
+        return answer(call, t["channels"]["not_admin"], True)
+    if cmd == "ch":
+        return begin_create(uid, p[1] if len(p) > 1 else "", call)
+    if cmd in ("qw", "qm", "qs", "qe", "qwc", "qmc", "qsc", "qec"):
+        return quick_choice(call, cmd, p)
 
     d = owned(call, p[1] if len(p) > 1 else "")
     if d is None:
         return
+
+    if cmd == "chrs":
+        answer(call)
+        return show_sub_channels(uid, d.id, call.message)
+    if cmd == "subm":
+        answer(call)
+        fsm.set_state(uid, "s_add", draw_id=d.id)
+        return bot.send_message(uid, t["subs"]["prompt"], reply_markup=keyboard.back_kb(uid),
+                                disable_web_page_preview=True)
+    if cmd == "sub":
+        if d.status != "draft":
+            return answer(call, t["draw"]["not_editable"], True)
+        chat_id = p[2] if len(p) > 2 else ""
+        chat, err = middleware.verify_channel_for_user(uid, chat_id, need_post=False)
+        if err:
+            return answer(call, t["draw"][err], True)
+        subs = db.select_all(models.DrawChannel, draw_id=d.id)
+        if str(chat.id) == d.channel_id or any(c.channel_id == str(chat.id) for c in subs):
+            return answer(call, t["subs"]["dup"], True)
+        if len(subs) >= config.MAX_SUB_CHANNELS:
+            return answer(call, t["subs"]["limit"].format(n=config.MAX_SUB_CHANNELS), True)
+        db.new(models.DrawChannel, draw_id=d.id, channel_id=str(chat.id),
+               title=chat.title or str(chat.id),
+               link=f"https://t.me/{chat.username}" if chat.username else "")
+        answer(call, t["subs"]["added"])
+        return middleware.show_subs(uid, d.id, call.message)
 
     if cmd == "v":
         answer(call)
@@ -505,7 +727,7 @@ def route_callback(call):
     if cmd == "ed" and len(p) > 2 and p[2] in FIELDS:
         answer(call)
         fsm.set_state(uid, "e_input", draw_id=d.id, field=p[2])
-        return ask(uid, p[2])
+        return ask(uid, p[2], d.id)
     if cmd == "pub":
         return do_publish(uid, d, call)
     if cmd == "subs":
@@ -515,9 +737,7 @@ def route_callback(call):
         if db.count(models.DrawChannel, draw_id=d.id) >= config.MAX_SUB_CHANNELS:
             return answer(call, t["subs"]["limit"].format(n=config.MAX_SUB_CHANNELS), True)
         answer(call)
-        fsm.set_state(uid, "s_add", draw_id=d.id)
-        return bot.send_message(uid, t["subs"]["prompt"], reply_markup=keyboard.back_kb(uid),
-                                disable_web_page_preview=True)
+        return show_sub_channels(uid, d.id, call.message)
     if cmd == "subdel":
         try:
             sub_id = int(p[2])
@@ -532,4 +752,6 @@ def route_callback(call):
 if __name__ == "__main__":
     middleware.start_worker()
     print("Bot started")
-    bot.infinity_polling(allowed_updates=["message", "callback_query"])
+    bot.infinity_polling(allowed_updates=[
+        "message", "callback_query", "my_chat_member", "channel_post",
+    ])

@@ -73,18 +73,23 @@ def user_tz(user_id):
 
 
 # ---- Время ----
-TIME_FORMATS = ("%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M")
+TIME_FORMATS = ("%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M", "%d.%m %H:%M")
 TZ_RE = re.compile(r"^(?:UTC|GMT)?\s*([+-])?\s*(\d{1,2})(?::?(\d{2}))?$", re.I)
 
 
 def parse_local_time(text, tz_minutes):
     """Строка во времени пользователя -> наивный UTC datetime (или None)."""
-    text = (text or "").strip()
+    text = (text or "").strip().replace(",", " ")
     for fmt in TIME_FORMATS:
         try:
-            return datetime.strptime(text, fmt) - timedelta(minutes=tz_minutes)
+            dt = datetime.strptime(text, fmt)
         except ValueError:
             continue
+        if "%Y" not in fmt:
+            dt = dt.replace(year=models.utcnow().year)
+            if dt < models.utcnow() - timedelta(minutes=1):  # «31.12» без года = ближайший будущий год
+                dt = dt.replace(year=dt.year + 1)
+        return dt - timedelta(minutes=tz_minutes)
     return None
 
 
@@ -100,8 +105,18 @@ def tz_label(minutes):
     return f"UTC{sign}{h}" + (f":{m:02d}" if m else "")
 
 
+def tz_name(minutes, uid=None):
+    """Подпись часового пояса с человеческим названием для МСК."""
+    if minutes == 180:
+        return "МСК (UTC+3)" if (uid is None or lang_of(uid) == "RU") else "MSK (UTC+3)"
+    return tz_label(minutes)
+
+
 def parse_tz(text):
-    m = TZ_RE.match((text or "").strip())
+    raw = (text or "").strip()
+    if raw.upper() in ("МСК", "MSK", "МОСКВА", "MOSCOW"):
+        return 180
+    m = TZ_RE.match(raw)
     if not m:
         return None
     sign = -1 if m.group(1) == "-" else 1
@@ -114,6 +129,18 @@ def parse_tz(text):
 
 # ---- Текст ----
 esc = html.escape
+
+
+def html_text(m):
+    """HTML-текст сообщения или подписи к медиа, с запасным вариантом."""
+    try:
+        if getattr(m, "text", None) is not None:
+            return m.html_text or esc(m.text)
+        if getattr(m, "caption", None) is not None:
+            return getattr(m, "html_caption", None) or esc(m.caption)
+    except Exception:
+        pass
+    return esc(getattr(m, "text", None) or getattr(m, "caption", None) or "")
 
 
 def plain_len(html_text):

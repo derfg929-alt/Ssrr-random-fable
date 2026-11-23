@@ -15,7 +15,7 @@ import keyboard
 import models
 from app import bot, db
 from models import utcnow
-from tool import T, esc, fmt_dt, ikb, short, tz_label, user_tz
+from tool import T, esc, fmt_dt, ikb, short, tz_name, user_tz
 
 OK_STATUSES = ("member", "administrator", "creator")
 _bot_id = None
@@ -28,6 +28,108 @@ def bot_id():
     if _bot_id is None:
         _bot_id = bot.get_me().id
     return _bot_id
+
+
+# ======================= АВТООБНАРУЖЕНИЕ КАНАЛОВ =======================
+_chat_cache = {}          # user_id -> (время, [(BotChat, is_admin), ...])
+
+
+def remember_chat(chat, user_id=None, can_post=None):
+    """Сохраняет канал/группу, куда добавлен бот, чтобы показывать её кнопкой."""
+    if not config.AUTO_DETECT_CHANNELS or chat is None or chat.type == "private":
+        return
+    chat_id = str(chat.id)
+    existing = db.get_one(models.BotChat, chat_id=chat_id)
+    if existing and can_post is None and existing.seen_at \
+            and (utcnow() - existing.seen_at).total_seconds() < 60:
+        return  # частые посты в канале не должны писать в БД на каждое сообщение
+    fields = {
+        "title": chat.title or "",
+        "username": chat.username or "",
+        "type": chat.type,
+        "seen_at": utcnow(),
+    }
+    if can_post is not None:
+        fields["can_post"] = 1 if can_post else 0
+    if existing:
+        db.update(models.BotChat, fields, chat_id=chat_id)
+    else:
+        try:
+            db.new(models.BotChat, chat_id=chat_id, added_by=str(user_id or ""), **fields)
+        except Exception:  # параллельный update уже вставил строку
+            db.update(models.BotChat, fields, chat_id=chat_id)
+    _chat_cache.clear()
+
+
+def forget_chat(chat_id):
+    db.delete(models.BotChat, chat_id=str(chat_id))
+    _chat_cache.clear()
+
+
+def _as_chat_ref(chat_id):
+    s = str(chat_id)
+    return int(s) if re.fullmatch(r"-?\d+", s) else s
+
+
+def _check_chat_access(chat, user_id, need_post=True):
+    if chat.type == "private":
+        return None, "bad_chat"
+    try:
+        um = bot.get_chat_member(chat.id, user_id)
+    except Exception:
+        return None, "not_admin"
+    if um.status not in ("creator", "administrator"):
+        return None, "not_admin"
+    try:
+        bm = bot.get_chat_member(chat.id, bot_id())
+    except Exception:
+        return None, "bot_not_admin"
+    if bm.status not in ("creator", "administrator"):
+        return None, "bot_not_admin"
+    can_post = getattr(bm, "can_post_messages", False) or bm.status == "creator"
+    if need_post and chat.type == "channel" and not can_post:
+        return None, "bot_cant_post"
+    remember_chat(chat, user_id, can_post=can_post)
+    return chat, None
+
+
+def verify_channel_for_user(user_id, chat_id, need_post=True):
+    """Проверяет права пользователя и бота. Возвращает (chat, None) или (None, ключ_ошибки)."""
+    try:
+        chat = bot.get_chat(_as_chat_ref(chat_id))
+    except Exception:
+        return None, "chat_not_found"
+    return _check_chat_access(chat, user_id, need_post)
+
+
+def available_channels(user_id):
+    """Каналы, где бот администратор. Возвращает [(BotChat, пользователь_админ)]."""
+    key = str(user_id)
+    cached = _chat_cache.get(key)
+    if cached and time.time() - cached[0] < config.CHANNEL_CACHE_TTL:
+        return cached[1]
+    result = []
+    for c in db.select_all(models.BotChat, order_by=models.BotChat.title):
+        if len(result) >= config.MAX_LISTED_CHANNELS:
+            break
+        try:
+            bm = bot.get_chat_member(c.chat_id, bot_id())
+        except Exception:
+            continue
+        if bm.status not in ("creator", "administrator"):
+            db.delete(models.BotChat, chat_id=c.chat_id)
+            continue
+        if c.type == "channel" and bm.status == "administrator" \
+                and not getattr(bm, "can_post_messages", False):
+            continue
+        try:
+            um = bot.get_chat_member(c.chat_id, user_id)
+            is_admin = um.status in ("creator", "administrator")
+        except Exception:
+            is_admin = False
+        result.append((c, is_admin))
+    _chat_cache[key] = (time.time(), result)
+    return result
 
 
 # ======================= КАНАЛЫ / ЧАТЫ =======================
@@ -59,23 +161,7 @@ def resolve_chat(message, user_id, need_post=True):
         chat = bot.get_chat(ref)
     except Exception:
         return None, "chat_not_found"
-    if chat.type == "private":
-        return None, "bad_chat"
-    try:
-        if bot.get_chat_member(chat.id, user_id).status not in ("creator", "administrator"):
-            return None, "not_admin"
-    except Exception:
-        return None, "not_admin"
-    try:
-        bm = bot.get_chat_member(chat.id, bot_id())
-    except Exception:
-        return None, "bot_not_admin"
-    if bm.status not in ("creator", "administrator"):
-        return None, "bot_not_admin"
-    if need_post and chat.type == "channel" and bm.status == "administrator" \
-            and not getattr(bm, "can_post_messages", False):
-        return None, "bot_cant_post"
-    return chat, None
+    return _check_chat_access(chat, user_id, need_post)
 
 
 def post_link(d):
@@ -116,7 +202,7 @@ def draw_summary(uid, d):
         f"<b>{s['channel']}:</b> {esc(d.channel_name or '')}",
         f"<b>{s['start']}:</b> {fmt_dt(d.start_at, tz) if d.start_at else s['on_publish']}",
         f"<b>{s['end']}:</b> {fmt_dt(d.end_at, tz)}",
-        f"<b>{s['tz']}:</b> {tz_label(tz)}",
+        f"<b>{s['tz']}:</b> {tz_name(tz, uid)}",
         f"<b>{s['winners']}:</b> {d.winners_count}",
         f"<b>{s['max']}:</b> {d.max_players or t['common']['unlimited']}",
         f"<b>{s['button']}:</b> {esc(d.button_text or '')}",
