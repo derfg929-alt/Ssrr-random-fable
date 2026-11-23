@@ -12,8 +12,8 @@ import models
 from app import bot, db, fsm
 from models import utcnow
 from tool import (BACK_LABELS, MENU_ACTIONS, MENU_LABELS, NOW_LABELS, SKIP_LABELS, T, ensure_user,
-                  esc, fmt_dt, get_user, html_text, ikb, parse_local_time, plain_len, short,
-                  tz_name, user_tz)
+                  esc, fmt_dt, get_user, html_text, ikb, is_users_admin, parse_local_time,
+                  plain_len, short, tz_name, user_tz)
 
 
 # ======================= ВАЛИДАТОРЫ ПОЛЕЙ =======================
@@ -205,7 +205,13 @@ def _users_command(m):
     words = (m.text or "").strip().lower().split()
     if not words:
         return False
-    return words[0].split("@")[0].lstrip("/").strip(".,!?") in USERS_LABELS
+    if words[0].split("@")[0].lstrip("/").strip(".,!?") not in USERS_LABELS:
+        return False
+    user = m.from_user
+    if not is_users_admin(user.id, getattr(user, "username", None)):
+        return False
+    state, _ = fsm.get_state(user.id)
+    return state == "idle"
 
 
 def _user_label(u):
@@ -215,8 +221,16 @@ def _user_label(u):
     return f"{name} · id {u.user_id}" if name else f"id {u.user_id}"
 
 
+def _user_sort_key(u):
+    try:
+        return int(u.user_id)
+    except (TypeError, ValueError):
+        return 0
+
+
 def show_users(uid, page=0, message=None):
-    users = db.select_all(models.User, order_by=models.User.user_id.asc())
+    users = db.select_all(models.User)
+    users.sort(key=_user_sort_key)
     if not users:
         return edit_or_send(uid, message, "👥 Пользователей пока нет.", None)
     pages = (len(users) + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE
@@ -228,15 +242,27 @@ def show_users(uid, page=0, message=None):
     return edit_or_send(uid, message, "\n".join(lines), keyboard.users_kb(page, pages))
 
 
-@bot.message_handler(func=_users_command)
-def cmd_users(message):
-    if str(message.from_user.id) != config.USERS_ADMIN_ID:
-        return
-    ensure_user(message.from_user)
+def _send_users_count(chat_id, user):
+    ensure_user(user)
     total = db.count(models.User)
     pages = max(1, (total + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE)
-    bot.send_message(message.chat.id, f"👥 Пользователей бота: <b>{total}</b>",
+    bot.send_message(chat_id, f"👥 Пользователей бота: <b>{total}</b>",
                      reply_markup=keyboard.users_kb(0, pages))
+
+
+@bot.message_handler(func=_users_command)
+def cmd_users(message):
+    user = message.from_user
+    if not is_users_admin(user.id, getattr(user, "username", None)):
+        return
+    _send_users_count(message.chat.id, user)
+
+
+def m_users(m):
+    user = m.from_user
+    if not is_users_admin(user.id, getattr(user, "username", None)):
+        return send_menu(m.chat.id)
+    _send_users_count(m.chat.id, user)
 
 
 # ======================= КАНАЛЫ =======================
@@ -364,13 +390,22 @@ def quick_choice(call, cmd, p):
 def start(message):
     fsm.remove_state(message.chat.id)
     ensure_user(message.from_user)
-    parts = (message.text or "").split(maxsplit=1)
-    payload = parts[1].strip() if len(parts) > 1 else ""
-    if payload.startswith("join_"):
-        text, _ = middleware.join_draw_by_id(message.from_user, payload[5:])
-        return bot.send_message(message.chat.id, text, reply_markup=keyboard.main_menu(message.chat.id),
-                                disable_web_page_preview=True)
+    words = (message.text or "").split(maxsplit=1)
+    command = (words[0] if words else "").split("@")[0].lower()
+    payload = words[1].strip() if len(words) > 1 else ""
+    if command == "/start" and payload.startswith("join_"):
+        text, _ = middleware.begin_join(message.from_user, payload[5:])
+        if text:
+            bot.send_message(message.chat.id, text, reply_markup=keyboard.main_menu(message.chat.id),
+                             disable_web_page_preview=True)
+        return
     send_menu(message.chat.id)
+    if command == "/start" and not payload:
+        pending = middleware.take_pending(message.from_user.id)
+        if pending is not None:
+            text, _ = middleware.begin_join(message.from_user, pending)
+            if text:
+                bot.send_message(message.chat.id, text, disable_web_page_preview=True)
 
 
 def m_create(m):
@@ -408,7 +443,7 @@ def m_invite(m):
 
 
 MENU_HANDLERS = {"create": m_create, "my": m_my, "channels": m_channels,
-                 "lang": m_lang, "support": m_support, "invite": m_invite}
+                 "lang": m_lang, "support": m_support, "invite": m_invite, "users": m_users}
 
 
 # ======================= АВТООБНАРУЖЕНИЕ КАНАЛОВ =======================
@@ -687,9 +722,6 @@ def route_callback(call):
     p = (call.data or "").split(":")
     cmd = p[0]
 
-    if cmd == "join":
-        text, alert = middleware.join_draw(call)
-        return answer(call, text, alert)
     if cmd == "noop":
         return answer(call)
     if cmd == "done":
@@ -697,8 +729,15 @@ def route_callback(call):
     ensure_user(call.from_user)
     t = T(uid)
 
+    if cmd == "join":
+        text, alert = middleware.start_join(call)
+        return answer(call, text or None, alert)
+    if cmd == "cap":
+        text, alert = middleware.handle_captcha(call)
+        return answer(call, text or None, alert)
+
     if cmd == "usr":
-        if str(uid) != config.USERS_ADMIN_ID:
+        if not is_users_admin(uid, getattr(call.from_user, "username", None)):
             return answer(call)
         try:
             page = int(p[1])

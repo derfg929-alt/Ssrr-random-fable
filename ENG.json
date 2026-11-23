@@ -9,7 +9,8 @@
       "lang": "🌐 Language",
       "support": "💬 Support",
       "invite": "🎁 Invite",
-      "channels": "📣 My channels"
+      "channels": "📣 My channels",
+      "users": "👥 Users"
     }
   },
   "common": {
@@ -134,7 +135,7 @@
   },
   "post": {
     "join_default": "🎉 Join",
-    "finished_button": "🏁 Finished ({n})",
+    "finished_button": "🏁 Finished · {n}",
     "winners_title": "🏆 Winners:",
     "reroll_title": "🔄 New winners:",
     "no_winners": "😔 No participants — no winners were picked.",
@@ -147,8 +148,7 @@
     "full": "Registration is closed.",
     "joined": "✅ You are in! Good luck!",
     "not_subscribed": "Please subscribe first: {channels}",
-    "check_failed": "Could not check your subscription. Try again later.",
-    "join_link_line": "👉 Join: {link}"
+    "check_failed": "Could not check your subscription. Try again later."
   },
   "channels": {
     "title": "📣 Channels where the bot is an admin\n\nPick a channel for the giveaway:",
@@ -175,5 +175,29 @@
     "custom_end": "Send the end date and time, e.g. 31.12 18:00 ({tz}).",
     "no_limit": "∞ No limit",
     "custom_max": "Send the participant limit (0 for no limit)."
+  },
+  "captcha": {
+    "caption": "🛡 <b>Human check</b>\n\nFind the picture that shows {target}.\n\nTap the number of the matching picture.",
+    "target": "the {color} {shape}",
+    "colors": {
+      "red": "red",
+      "blue": "blue",
+      "green": "green",
+      "yellow": "yellow",
+      "purple": "purple",
+      "orange": "orange"
+    },
+    "shapes": {
+      "circle": "circle",
+      "square": "square",
+      "triangle": "triangle",
+      "star": "star",
+      "diamond": "diamond",
+      "heart": "heart"
+    },
+    "wrong": "❌ Wrong. Try again.",
+    "too_many": "🚫 Too many attempts. Please try later.",
+    "expired": "⌛ This check has expired. Tap “Join” again.",
+    "open_bot": "To take part, open {bot} and press /start."
   }
 }
