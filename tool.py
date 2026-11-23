@@ -68,13 +68,12 @@ def T(user_id, code=None):
 
 
 def user_tz(user_id):
-    user = get_user(user_id)
-    return user.tz_offset if user and user.tz_offset is not None else config.DEFAULT_TZ
+    # Время всегда московское — выбор часового пояса убран
+    return config.DEFAULT_TZ
 
 
 # ---- Время ----
 TIME_FORMATS = ("%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M", "%d.%m %H:%M")
-TZ_RE = re.compile(r"^(?:UTC|GMT)?\s*([+-])?\s*(\d{1,2})(?::?(\d{2}))?$", re.I)
 
 
 def parse_local_time(text, tz_minutes):
@@ -99,32 +98,9 @@ def fmt_dt(dt, tz_minutes):
     return (dt + timedelta(minutes=tz_minutes)).strftime("%Y-%m-%d %H:%M")
 
 
-def tz_label(minutes):
-    sign = "+" if minutes >= 0 else "-"
-    h, m = divmod(abs(minutes), 60)
-    return f"UTC{sign}{h}" + (f":{m:02d}" if m else "")
-
-
-def tz_name(minutes, uid=None):
-    """Подпись часового пояса с человеческим названием для МСК."""
-    if minutes == 180:
-        return "МСК (UTC+3)" if (uid is None or lang_of(uid) == "RU") else "MSK (UTC+3)"
-    return tz_label(minutes)
-
-
-def parse_tz(text):
-    raw = (text or "").strip()
-    if raw.upper() in ("МСК", "MSK", "МОСКВА", "MOSCOW"):
-        return 180
-    m = TZ_RE.match(raw)
-    if not m:
-        return None
-    sign = -1 if m.group(1) == "-" else 1
-    h, mm = int(m.group(2)), int(m.group(3) or 0)
-    if mm >= 60:
-        return None
-    total = sign * (h * 60 + mm)
-    return total if -12 * 60 <= total <= 14 * 60 else None
+def tz_name(minutes=180, uid=None):
+    """Подпись часового пояса. Бот всегда работает по московскому времени."""
+    return "МСК (UTC+3)" if (uid is None or lang_of(uid) == "RU") else "MSK (UTC+3)"
 
 
 # ---- Текст ----

@@ -1,3 +1,5 @@
+import atexit
+
 import telebot
 
 import config
@@ -15,4 +17,5 @@ bot = telebot.TeleBot(config.token, parse_mode="HTML", threaded=True, num_thread
 
 db = DataBase()
 db.base_init()
+atexit.register(db.save)
 fsm = FSM(db)
