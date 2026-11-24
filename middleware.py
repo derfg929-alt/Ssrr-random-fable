@@ -55,6 +55,8 @@ def remember_chat(chat, user_id=None, can_post=None):
     if can_post is not None:
         fields["can_post"] = 1 if can_post else 0
     if existing:
+        if user_id and not existing.added_by:
+            fields["added_by"] = str(user_id)
         db.update(models.BotChat, fields, chat_id=chat_id)
     else:
         try:
@@ -106,15 +108,18 @@ def verify_channel_for_user(user_id, chat_id, need_post=True):
 
 
 def available_channels(user_id):
-    """Каналы, где бот администратор. Возвращает [(BotChat, пользователь_админ)]."""
+    """Каналы, которые добавил этот пользователь и где бот администратор.
+
+    Возвращает [(BotChat, пользователь_админ)].
+    """
     key = str(user_id)
     cached = _chat_cache.get(key)
     if cached and time.time() - cached[0] < config.CHANNEL_CACHE_TTL:
         return cached[1]
     result = []
     for c in db.select_all(models.BotChat, order_by=models.BotChat.title):
-        if len(result) >= config.MAX_LISTED_CHANNELS:
-            break
+        if str(c.added_by or "") != key:
+            continue
         try:
             bm = bot.get_chat_member(c.chat_id, bot_id())
         except Exception:
@@ -131,6 +136,8 @@ def available_channels(user_id):
         except Exception:
             is_admin = False
         result.append((c, is_admin))
+        if len(result) >= config.MAX_LISTED_CHANNELS:
+            break
     _chat_cache[key] = (time.time(), result)
     return result
 
