@@ -6,6 +6,7 @@ import re
 import threading
 import time
 import traceback
+from datetime import datetime
 
 import telebot
 from telebot.apihelper import ApiTelegramException
@@ -20,10 +21,140 @@ from models import utcnow
 from tool import T, bot_username, esc, fmt_dt, ikb, short, tz_name, user_tz
 
 OK_STATUSES = ("member", "administrator", "creator")
+FINISH_MODES = ("time", "count", "both")
 _bot_id = None
 _last_edit = {}          # draw_id -> время последнего обновления счётчика
 _synced = set()          # draw_id, у которых кнопка уже переведена на URL-вид
 _rng = random.SystemRandom()
+
+
+def _mode(d):
+    mode = getattr(d, "finish_mode", "time") or "time"
+    return mode if mode in FINISH_MODES else "both"
+
+
+def effective_finish_mode(d):
+    """both без цели фактически работает как time (совместимость со старыми розыгрышами)."""
+    mode = _mode(d)
+    if mode == "both" and not getattr(d, "max_players", 0):
+        return "time"
+    return mode
+
+
+def finish_mode(d):
+    return effective_finish_mode(d)
+
+
+def boost_link(d):
+    """Ссылка на экран буста канала. Для публичных — по username, для приватных — по id."""
+    username = (getattr(d, "channel_username", "") or "").lstrip("@")
+    if username:
+        return f"https://t.me/boost/{username}"
+    cid = str(getattr(d, "channel_id", "") or "")
+    if cid.startswith("-100"):
+        cid = cid[4:]
+    elif cid.startswith("-"):
+        return ""
+    return f"https://t.me/boost/?channel={cid}" if cid else ""
+
+
+def invite_link(user_id):
+    username = bot_username()
+    return f"https://t.me/{username}?start=ref_{user_id}" if username else ""
+
+
+def _fetch_boost_count(d, user_id):
+    """Сколько бустов пользователь дал каналу. 0, если проверить не удалось."""
+    if not getattr(d, "boost_enabled", 0):
+        return 0
+    try:
+        result = bot.get_user_chat_boosts(d.channel_id, int(user_id))
+        return len(getattr(result, "boosts", None) or [])
+    except Exception:
+        return 0
+
+
+def refresh_boost_count(d, user_id):
+    return _fetch_boost_count(d, user_id)
+
+
+def ref_counts():
+    """user_id пригласившего -> сколько пользователей он пригласил."""
+    counts = {}
+    for user in db.select_all(models.User):
+        inviter = str(getattr(user, "referred_by", "") or "")
+        if inviter:
+            counts[inviter] = counts.get(inviter, 0) + 1
+    return counts
+
+
+def tickets_for(d, player, refs=0, boost=None):
+    boost = getattr(player, "boost_count", 0) if boost is None else boost
+    boost = boost or 0
+    refs = refs or 0
+    tickets = 1
+    if getattr(d, "refs_enabled", 0):
+        tickets += refs * config.REF_BONUS_TICKETS
+    if getattr(d, "boost_enabled", 0):
+        per_boost = getattr(d, "boost_tickets", 0) or config.BOOST_TICKETS_DEFAULT
+        tickets += boost * per_boost
+    return max(1, tickets)
+
+
+def total_tickets(d, players=None, refs=None):
+    players = players if players is not None else db.select_all(models.Player, draw_id=d.id)
+    refs = refs if refs is not None else ref_counts()
+    return sum(tickets_for(d, p, refs.get(str(p.user_id), 0), p.boost_count) for p in players)
+
+
+def ticket_text(d, user_id, refs=None):
+    player = db.get_one(models.Player, draw_id=d.id, user_id=str(user_id))
+    if not player:
+        return ""
+    refs = refs if refs is not None else ref_counts()
+    player_refs = refs.get(str(user_id), 0)
+    tickets = tickets_for(d, player, player_refs, player.boost_count)
+    total = total_tickets(d, refs=refs)
+    chance = (tickets * 100.0 / total) if total else 0.0
+    t = T(user_id)["post"]
+    parts = [t["tickets_title"].format(tickets=tickets)]
+    if getattr(d, "refs_enabled", 0) or getattr(d, "boost_enabled", 0):
+        extras = [t["tickets_base"]]
+        if getattr(d, "refs_enabled", 0):
+            extras.append(t["tickets_refs"].format(refs=player_refs))
+        if getattr(d, "boost_enabled", 0):
+            extras.append(t["tickets_boost"].format(
+                boost=player.boost_count or 0,
+                per_boost=getattr(d, "boost_tickets", 0) or config.BOOST_TICKETS_DEFAULT,
+            ))
+        parts.append(" · ".join(extras))
+    parts.append(t["tickets_total"].format(total=total, chance=f"{chance:.2f}"))
+    return "\n".join(parts)
+
+
+def send_ticket_info(user, d):
+    """Сообщение участнику с его билетами и кнопками «пригласить»/«забустить»."""
+    if not (getattr(d, "refs_enabled", 0) or getattr(d, "boost_enabled", 0)):
+        return
+    text = ticket_text(d, user.id)
+    if not text:
+        return
+    t = T(user.id, getattr(user, "language_code", None))["post"]
+    rows = []
+    link = invite_link(user.id)
+    if getattr(d, "refs_enabled", 0) and link:
+        rows.append([(t["invite_button"], link)])
+    if getattr(d, "boost_enabled", 0):
+        boost = boost_link(d)
+        if boost:
+            rows.append([(t["boost_button"].format(n=getattr(d, "boost_tickets", 0) or config.BOOST_TICKETS_DEFAULT),
+                          boost, "primary")])
+        rows.append([(t["boost_check"], f"boost:{d.id}")])
+    try:
+        bot.send_message(user.id, text, reply_markup=ikb(rows) if rows else None,
+                         disable_web_page_preview=True)
+    except Exception:
+        pass
 
 
 def bot_id():
@@ -206,15 +337,30 @@ def draw_summary(uid, d):
     s = t["draw"]["summary"]
     tz = user_tz(uid)
     subs = db.select_all(models.DrawChannel, draw_id=d.id)
+    mode = effective_finish_mode(d)
+    display_mode = mode
+    if display_mode == "count":
+        end_text = s["by_count"].format(n=d.max_players)
+    elif display_mode == "both":
+        end_text = f"{fmt_dt(d.end_at, tz)} / {s['by_count'].format(n=d.max_players)}"
+    else:
+        end_text = fmt_dt(d.end_at, tz)
+    limit = str(d.max_players) if d.max_players else t["common"]["unlimited"]
+    refs_text = s["on"] if d.refs_enabled else s["off"]
+    boost_text = s["boost_on"].format(n=d.boost_tickets or config.BOOST_TICKETS_DEFAULT) \
+        if d.boost_enabled else s["off"]
     lines = [
         s["title"].format(id=d.id, status=f"{t['status_icons'][d.status]} {t['status'][d.status]}"),
         "",
         f"<b>{s['channel']}:</b> {esc(d.channel_name or '')}",
+        f"<b>{s['mode']}:</b> {s['mode_' + display_mode]}",
         f"<b>{s['start']}:</b> {fmt_dt(d.start_at, tz) if d.start_at else s['on_publish']}",
-        f"<b>{s['end']}:</b> {fmt_dt(d.end_at, tz)}",
+        f"<b>{s['end']}:</b> {end_text}",
         f"<b>{s['tz']}:</b> {tz_name(tz, uid)}",
         f"<b>{s['winners']}:</b> {d.winners_count}",
-        f"<b>{s['max']}:</b> {d.max_players or t['common']['unlimited']}",
+        f"<b>{s['target'] if display_mode in ('count', 'both') else s['limit']}:</b> {limit}",
+        f"<b>{s['refs']}:</b> {refs_text}",
+        f"<b>{s['boost']}:</b> {boost_text}",
         f"<b>{s['button']}:</b> {esc(d.button_text or '')}",
         f"<b>{s['subs']}:</b> " + (", ".join(esc(c.title or "") for c in subs) or t["common"]["none"]),
     ]
@@ -308,14 +454,15 @@ def join_draw_by_id(user, draw_id):
         return err
 
     name = " ".join(x for x in (user.first_name, user.last_name) if x) or user.username or str(user.id)
+    boost_count = _fetch_boost_count(d, user.id)
     try:
-        db.new(models.Player, draw_id=d.id, user_id=str(user.id), name=short(name, 64), username=user.username)
+        db.new(models.Player, draw_id=d.id, user_id=str(user.id), name=short(name, 64),
+               username=user.username, boost_count=boost_count)
     except IntegrityError:
         return t["already"], False
 
-    # лимит достигнут -> воркер завершит розыгрыш на ближайшем тике
-    if d.max_players and db.count(models.Player, draw_id=d.id) >= d.max_players:
-        db.update(models.Draw, {"end_at": utcnow()}, id=d.id, status="active")
+    # count/both завершит воркер на ближайшем тике, когда увидит достигнутую цель
+    send_ticket_info(user, d)
     return t["joined"], False
 
 
@@ -467,6 +614,57 @@ def load_winners(d):
         return []
 
 
+def load_reroll_log(d):
+    try:
+        data = json.loads(getattr(d, "reroll_log", None) or "[]")
+        return data if isinstance(data, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def results_text(d, uid):
+    """Итоги: текущие победители + все, кого заменили переигровками."""
+    t = T(uid)["post"]
+    tz = user_tz(uid)
+    winners = load_winners(d)
+    log = load_reroll_log(d)
+    lines = [t["results_title"].format(id=d.id), "", t["current_winners"]]
+    if winners:
+        lines.extend(winner_line(i, w) for i, w in enumerate(winners, 1))
+    else:
+        lines.append(t["no_winners"])
+
+    lines.append("")
+    if log:
+        lines.append(t["rerolled_winners"])
+        total_rounds = len(log)
+        for shown, entry in enumerate(reversed(log), 1):
+            if not isinstance(entry, dict):
+                continue
+            round_no = total_rounds - shown + 1
+            at = entry.get("at") or ""
+            try:
+                at = fmt_dt(datetime.fromisoformat(at), tz)
+            except (TypeError, ValueError):
+                pass
+            lines.append(t["reroll_round"].format(n=round_no, date=at))
+            old = entry.get("winners") or []
+            if old:
+                lines.extend(winner_line(i, w) for i, w in enumerate(old, 1))
+            else:
+                lines.append(t["no_winners"])
+    elif (d.rerolls or 0):
+        lines.append(t["reroll_history_missing"].format(n=d.rerolls))
+    else:
+        lines.append(t["no_rerolls"])
+
+    lines.append("")
+    lines.append(t["players_count"].format(n=db.count(models.Player, draw_id=d.id)))
+    if log and (d.rerolls or 0) > len(log):
+        lines.append(t["reroll_history_missing"].format(n=d.rerolls))
+    return "\n".join(lines)
+
+
 def winner_line(index, w):
     """Строка победителя: @username (ссылка), иначе имя со ссылкой tg://user."""
     if not isinstance(w, dict):
@@ -520,8 +718,29 @@ def split_text(text, limit=3500):
     return parts or [""]
 
 
+def _weighted_sample(pool, weights, count):
+    """Выбор без повторов с учётом весов (билетов)."""
+    pool, weights, chosen = list(pool), list(weights), []
+    while pool and len(chosen) < count:
+        total = sum(weights)
+        if total <= 0:
+            idx = _rng.randrange(len(pool))
+        else:
+            point = _rng.uniform(0, total)
+            acc, idx = 0.0, len(pool) - 1
+            for i, weight in enumerate(weights):
+                acc += weight
+                if point < acc:
+                    idx = i
+                    break
+        chosen.append(pool.pop(idx))
+        weights.pop(idx)
+    return chosen
+
+
 def pick_winners(draw_id, count, exclude_ids=None):
     """Выбирает победителей. Возвращает (всего_участников, победители, был_ли_откат)."""
+    d = db.get_one(models.Draw, id=draw_id)
     players = db.select_all(models.Player, order_by=models.Player.id, draw_id=draw_id)
     pool, fallback = players, False
     if exclude_ids:
@@ -532,7 +751,11 @@ def pick_winners(draw_id, count, exclude_ids=None):
         else:
             # Новых участников не хватает — выбираем из всех, чтобы выдать нужное число.
             fallback = bool(players)
-    chosen = _rng.sample(pool, min(count, len(pool))) if pool else []
+
+    refs = ref_counts() if (d and getattr(d, "refs_enabled", 0)) else {}
+    weights = [tickets_for(d, p, refs.get(str(p.user_id), 0), p.boost_count) if d else 1
+               for p in pool]
+    chosen = _weighted_sample(pool, weights, min(count, len(pool))) if pool else []
     winners = [{"id": p.user_id, "name": p.name or p.username or p.user_id,
                 "username": p.username or ""} for p in chosen]
     return len(players), winners, fallback
@@ -549,7 +772,7 @@ def announce(d, winners, reroll):
     username = bot_username()
     if username:
         parts[-1] += "\n\n" + t["more_giveaways"].format(bot=f"@{username}")
-    markup = keyboard.bot_kb(d.owner_id)
+    markup = keyboard.results_kb(d.owner_id, d.id, back=False, bot=True, button=True)
     for idx, part in enumerate(parts):
         kw = {}
         if d.message_id:
@@ -570,7 +793,7 @@ def announce(d, winners, reroll):
 def close_post_button(d, n_players):
     t = T(d.owner_id)["post"]
     rows = [[(t["finished_button"].format(n=n_players), "done")],
-            [(t["reroll_button"], f"rr:{d.id}")]]
+            [(t["results_button"], f"res:{d.id}")]]
     username = bot_username()
     if username:
         rows.append([(t["bot_button"], f"https://t.me/{username}")])
@@ -598,6 +821,10 @@ def finish_draw(draw_id, reroll=False, exclude_previous=False):
     n_players, winners, fallback = pick_winners(d.id, d.winners_count, exclude_ids)
     rerolls = (d.rerolls or 0) + (1 if reroll else 0)
     values = {"winners": json.dumps(winners, ensure_ascii=False), "rerolls": rerolls}
+    if reroll and previous:
+        log = load_reroll_log(d)
+        log.append({"at": utcnow().isoformat(), "winners": previous})
+        values["reroll_log"] = json.dumps(log[-config.MAX_REROLL_LOG:], ensure_ascii=False)
     if not d.finished_at:
         values["finished_at"] = utcnow()
     db.update(models.Draw, values, id=d.id)
@@ -748,7 +975,11 @@ def tick():
         if d.start_at is None or d.start_at <= now:
             _safe(publish_draw, d.id)
     for d in db.select_all(models.Draw, status="active"):
-        if d.end_at and d.end_at <= now:
+        mode = effective_finish_mode(d)
+        players = db.count(models.Player, draw_id=d.id)
+        reached = mode in ("count", "both") and d.max_players and players >= d.max_players
+        timed = mode in ("time", "both") and d.end_at and d.end_at <= now
+        if reached or timed:
             _safe(finish_draw, d.id)
         else:
             _safe(refresh_counter, d)
