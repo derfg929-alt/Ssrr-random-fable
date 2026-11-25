@@ -2,6 +2,7 @@ import json
 import re
 import traceback
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 from telebot.apihelper import ApiTelegramException
 
@@ -11,8 +12,8 @@ import middleware
 import models
 from app import bot, db, fsm
 from models import utcnow
-from tool import (BACK_LABELS, MENU_ACTIONS, MENU_LABELS, NOW_LABELS, SKIP_LABELS, T, ensure_user,
-                  esc, fmt_dt, get_user, html_text, ikb, is_users_admin, parse_local_time,
+from tool import (BACK_LABELS, MENU_ACTIONS, MENU_LABELS, NOW_LABELS, SKIP_LABELS, T, bot_username,
+                  ensure_user, esc, fmt_dt, get_user, html_text, ikb, is_users_admin, parse_local_time,
                   plain_len, short, tz_name, user_tz)
 
 
@@ -399,6 +400,8 @@ def start(message):
             bot.send_message(message.chat.id, text, reply_markup=keyboard.main_menu(message.chat.id),
                              disable_web_page_preview=True)
         return
+    if command == "/start" and payload.startswith("ref_"):
+        middleware.register_referral(message.from_user.id, payload[4:])
     send_menu(message.chat.id)
     if command == "/start" and not payload:
         pending = middleware.take_pending(message.from_user.id)
@@ -433,13 +436,16 @@ def m_support(m):
 
 
 def m_invite(m):
-    try:
-        username = bot.get_me().username
-    except Exception:
-        username = ""
-    link = f"https://t.me/{username}" if username else "https://t.me/your_bot"
-    bot.send_message(m.chat.id, T(m.chat.id)["menu"]["invite"].format(link=link),
-                     disable_web_page_preview=True)
+    uid = m.chat.id
+    username = bot_username()
+    link = f"https://t.me/{username}?start=ref_{uid}" if username else "https://t.me/your_bot"
+    t = T(uid)["menu"]
+    invited = middleware.referral_count(uid)
+    share = ("https://t.me/share/url?url=" + quote(link, safe="")
+             + "&text=" + quote(t["invite_share_text"], safe=""))
+    bot.send_message(uid, t["invite"].format(link=link, invited=invited),
+                     disable_web_page_preview=True,
+                     reply_markup=ikb([[(t["invite_share"], share)]]))
 
 
 MENU_HANDLERS = {"create": m_create, "my": m_my, "channels": m_channels,
@@ -697,15 +703,31 @@ def do_action(uid, d, action, call):
         middleware.delete_draw(d.id)
         answer(call, t["common"]["deleted"])
         return show_list(uid, 0, call.message)
+    if action == "cancel" and d.status in ("scheduled", "active"):
+        answer(call, t["common"]["cancelled"])
+        middleware.cancel_draw(d.id)
+        return show_card(uid, db.get_one(models.Draw, id=d.id), call.message)
     if action == "fin" and d.status == "active":
         answer(call, t["my"]["working"])
         middleware.finish_draw(d.id)
-    elif action == "rr" and d.status == "finished":
+    elif action in ("rr", "rrx") and d.status == "finished":
         answer(call, t["my"]["working"])
-        middleware.finish_draw(d.id, reroll=True)
+        middleware.finish_draw(d.id, reroll=True, exclude_previous=(action == "rrx"))
     else:
         return answer(call, t["draw"]["not_editable"], True)
     show_card(uid, db.get_one(models.Draw, id=d.id), call.message)
+
+
+def channel_reroll(call, raw_id):
+    """Кнопка «Переиграть» под постом в канале — доступна только владельцу."""
+    uid = call.from_user.id
+    d = owned(call, raw_id)
+    if d is None:
+        return
+    if d.status != "finished":
+        return answer(call, T(uid)["draw"]["not_editable"], True)
+    answer(call, T(uid)["my"]["working"])
+    middleware.finish_draw(d.id, reroll=True)
 
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -769,6 +791,8 @@ def route_callback(call):
         return begin_create(uid, p[1] if len(p) > 1 else "", call)
     if cmd in ("qw", "qm", "qs", "qe", "qwc", "qmc", "qsc", "qec"):
         return quick_choice(call, cmd, p)
+    if cmd == "rr":
+        return channel_reroll(call, p[1] if len(p) > 1 else "")
 
     d = owned(call, p[1] if len(p) > 1 else "")
     if d is None:
@@ -813,12 +837,19 @@ def route_callback(call):
         answer(call)
         return bot.send_document(uid, data, caption=t["my"]["players_caption"].format(id=d.id, n=n))
     if cmd == "win":
-        winners = json.loads(d.winners or "[]")
+        winners = middleware.load_winners(d)
         answer(call)
-        return bot.send_message(uid, middleware.winners_text(winners) if winners else t["post"]["no_winners"])
+        text = middleware.winners_text(winners) if winners else t["post"]["no_winners"]
+        for part in middleware.split_text(text):
+            bot.send_message(uid, part, disable_web_page_preview=True)
+        return
     if cmd == "cf":
         action = p[2] if len(p) > 2 else ""
-        ok = {"del": d.status != "active", "fin": d.status == "active", "rr": d.status == "finished"}.get(action)
+        ok = {"del": d.status != "active",
+              "fin": d.status == "active",
+              "rr": d.status == "finished",
+              "rrx": d.status == "finished",
+              "cancel": d.status in ("scheduled", "active")}.get(action)
         if not ok:
             return answer(call, t["draw"]["not_editable"], True)
         answer(call)

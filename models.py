@@ -65,6 +65,7 @@ class User(Model):
     username = Field("")                        # без @, обновляется при каждом сообщении
     language = Field("RU")
     tz_offset = Field(config.DEFAULT_TZ)  # минуты от UTC, оставлено для совместимости
+    referred_by = Field("")                     # user_id того, кто пригласил по ссылке
 
 
 class Draw(Model):
@@ -75,7 +76,7 @@ class Draw(Model):
     __tablename__ = "draws"
     __pk__ = ("id",)
     __auto__ = "id"
-    __datetime__ = ("start_at", "end_at", "created_at")
+    __datetime__ = ("start_at", "end_at", "created_at", "finished_at")
     id = Field()
     owner_id = Field()
     channel_id = Field()
@@ -92,7 +93,9 @@ class Draw(Model):
     status = Field("draft")
     message_id = Field()
     shown_count = Field(-1)                     # какое число сейчас на кнопке
-    winners = Field("[]")                       # JSON [{"id":..., "name":...}]
+    winners = Field("[]")                       # JSON [{"id":..., "name":..., "username":...}]
+    rerolls = Field(0)                          # сколько раз переигрывали итоги
+    finished_at = Field()
     created_at = Field(utcnow)
 
 
