@@ -59,7 +59,8 @@
       "subs": "📣 Subscriptions",
       "max": "👥 Limit",
       "publish": "🚀 Publish",
-      "delete": "🗑 Delete"
+      "delete": "🗑 Delete",
+      "settings": "🎛 Settings"
     },
     "prompt_chat": "Forward a post from the channel or send its @username / t.me/... link.\n\nYou must be a channel admin, and the bot must be an admin too.",
     "prompt_text": "Send the post text. HTML markup is supported.\n\nUp to 4096 characters (or up to 1024 if you add media).",
@@ -101,8 +102,42 @@
       "subs": "Extra subscriptions",
       "players": "Participants",
       "on_publish": "right after publishing",
-      "rerolls": "Redraws"
-    }
+      "rerolls": "Redraws",
+      "mode": "Mode",
+      "mode_time": "by time",
+      "mode_count": "by participants",
+      "mode_both": "time or participants",
+      "target": "Target",
+      "limit": "Participant limit",
+      "by_count": "by {n} participants",
+      "refs": "Referrals",
+      "boost": "Boosts",
+      "on": "✅ on",
+      "off": "❌ off",
+      "boost_on": "+{n} tickets per boost"
+    },
+    "prompt_target": "How many participants should trigger the end? Send a number from 1 to 1,000,000.",
+    "prompt_mode": "🏁 How should the giveaway end?\n\n⏰ By time — on the specified date.\n👥 By participants — when the target number is reached.\n⏰+👥 Both — whichever comes first.",
+    "bad_target": "Enter a number from 1 to 1,000,000.",
+    "need_target": "Set the participant target in the giveaway settings.",
+    "mode": {
+      "time": "⏰ By time",
+      "count": "👥 By participants",
+      "both": "⏰+👥 Both"
+    },
+    "settings": {
+      "mode_time": "⏰ By time",
+      "mode_count": "👥 By participants",
+      "mode_both": "⏰+👥 Both",
+      "target": "🎯 Target: {n} participants",
+      "limit": "👥 Limit: {n}",
+      "refs_on": "🍀 Referrals: ✅ on",
+      "refs_off": "🍀 Referrals: ❌ off",
+      "boost_on": "🚀 Boosts: ✅ +{n} tickets",
+      "boost_off": "🚀 Boosts: ❌ off",
+      "back": "⬅️ Back"
+    },
+    "need_end": "Set the giveaway end date."
   },
   "subs": {
     "add": "➕ Add channel",
@@ -133,7 +168,8 @@
       "back": "⬅️ To list",
       "reroll_exclude": "🎲 Exclude previous",
       "share": "📤 Share",
-      "cancel": "🚫 Cancel"
+      "cancel": "🚫 Cancel",
+      "results": "🔍 Check results"
     },
     "confirm": {
       "del": "Delete giveaway #{id}? This cannot be undone.",
@@ -167,7 +203,30 @@
     "reroll_fallback": "ℹ️ Not enough new participants, so winners were picked from everyone.",
     "owner_report_reroll": "Giveaway #{id} in {channel} was redrawn (redraws: {rerolls}).\nParticipants: {n}\nWinners:\n{winners}",
     "cancelled_button": "🚫 Cancelled · {n}",
-    "cancelled_announce": "🚫 The giveaway was cancelled."
+    "cancelled_announce": "🚫 The giveaway was cancelled.",
+    "results_button": "🔍 Check results",
+    "results_title": "🔍 Results of giveaway #{id}",
+    "current_winners": "🏆 Current winners:",
+    "rerolled_winners": "🔄 Replaced by redraws:",
+    "reroll_round": "Round {n} · {date}",
+    "no_rerolls": "There were no redraws.",
+    "players_count": "👥 Total participants: {n}",
+    "reroll_history_missing": "ℹ️ Redraws: {n} (older history is unavailable).",
+    "results_not_ready": "Results are not ready yet: the giveaway is still running.",
+    "results_dm_hint": "Could not send the results in a DM. Open the bot {bot}, tap “Start” and try again.",
+    "tickets_title": "🎫 Your tickets: <b>{tickets}</b>",
+    "tickets_breakdown": "Base: 1 · Referrals: {refs} · Boosts: {boost}×{per_boost}",
+    "tickets_total": "Total tickets: {total} · Your chance: {chance}%",
+    "invite_button": "🍀 Invite a friend (+1 ticket)",
+    "boost_button": "🚀 Boost the channel (+{n} tickets)",
+    "boost_check": "🔄 Check boost",
+    "boost_checked": "Boosts counted: {n}. Tickets updated.",
+    "boost_disabled": "Boosts are not counted in this giveaway.",
+    "boost_finished": "The giveaway is already finished.",
+    "not_participating": "First tap “Join” in the giveaway post.",
+    "tickets_base": "Base: 1",
+    "tickets_refs": "Referrals: {refs}",
+    "tickets_boost": "Boosts: {boost}×{per_boost}"
   },
   "channels": {
     "title": "📣 Channels where the bot is an admin\n\nPick a channel for the giveaway:",
@@ -193,7 +252,8 @@
     "custom_start": "Send the start date and time, e.g. 31.12 18:00 ({tz}).",
     "custom_end": "Send the end date and time, e.g. 31.12 18:00 ({tz}).",
     "no_limit": "∞ No limit",
-    "custom_max": "Send the participant limit (0 for no limit)."
+    "custom_max": "Send the participant limit (0 for no limit).",
+    "custom_target": "Send the target number of participants (1 to 1,000,000)."
   },
   "captcha": {
     "caption": "🛡 <b>Human check</b>\n\nFind the picture that shows {target}.\n\nTap the number of the matching picture.",

@@ -112,6 +112,13 @@ def v_max(m, t, ctx):
     return {"max_players": n}, None
 
 
+def v_target(m, t, ctx):
+    n = _int(m, 1, 1_000_000)
+    if n is None:
+        return None, t["bad_target"]
+    return {"max_players": n}, None
+
+
 FIELDS = {
     "text": (v_text, "prompt_text"),
     "media": (v_media, "prompt_media"),
@@ -120,9 +127,11 @@ FIELDS = {
     "end": (v_end, "prompt_end"),
     "btn": (v_btn, "prompt_btn"),
     "max": (v_max, "prompt_max"),
+    "target": (v_target, "prompt_target"),
 }
-CREATE_FLOW = ["c_text", "c_media", "c_winners", "c_start", "c_end"]
-FIELD_OF = {"c_text": "text", "c_media": "media", "c_winners": "winners", "c_start": "start", "c_end": "end"}
+CREATE_FLOW = ["c_text", "c_media", "c_winners", "c_start", "c_mode", "c_target", "c_end"]
+FIELD_OF = {"c_text": "text", "c_media": "media", "c_winners": "winners",
+            "c_start": "start", "c_target": "target", "c_end": "end"}
 
 
 def ser(values):
@@ -151,6 +160,12 @@ def ask(uid, field, draw_id=None):
     t = T(uid)["draw"]
     bot.send_message(uid, t[FIELDS[field][1]].format(tz=tz_name(user_tz(uid), uid), max=config.MAX_WINNERS),
                      reply_markup=kb_for(uid, field, draw_id), disable_web_page_preview=True)
+
+
+def ask_mode(uid):
+    t = T(uid)["draw"]
+    bot.send_message(uid, t["prompt_mode"], reply_markup=keyboard.mode_kb(uid, 0),
+                     disable_web_page_preview=True)
 
 
 # ======================= ОБЩЕЕ =======================
@@ -193,6 +208,43 @@ def show_list(uid, page=0, message=None):
 def show_card(uid, d, message=None):
     link = middleware.post_link(d) if d.status in ("active", "finished") else None
     edit_or_send(uid, message, middleware.draw_summary(uid, d), keyboard.card_kb(uid, d, link))
+
+
+def show_settings(uid, d, message=None):
+    edit_or_send(uid, message, middleware.draw_summary(uid, d), keyboard.settings_kb(uid, d))
+
+
+def show_results(uid, d, message=None, call=None, public=False):
+    """Итоги: текущие победители и все, кого заменили переигровками."""
+    parts = middleware.split_text(middleware.results_text(d, uid))
+    if public:
+        try:
+            for i, part in enumerate(parts):
+                bot.send_message(uid, part,
+                                 reply_markup=keyboard.results_kb(uid, d.id, back=False, bot=True)
+                                 if i == len(parts) - 1 else None,
+                                 disable_web_page_preview=True)
+            if call:
+                answer(call)
+        except Exception:
+            if call:
+                answer(call, T(uid)["post"]["results_dm_hint"].format(
+                    bot=f"@{bot_username()}" if bot_username() else "бот"), True)
+        return
+
+    kb = keyboard.results_kb(uid, d.id, back=True, bot=False)
+    start = 0
+    if message is not None:
+        try:
+            bot.edit_message_text(parts[0], message.chat.id, message.message_id,
+                                  reply_markup=kb if len(parts) == 1 else None,
+                                  disable_web_page_preview=True)
+            start = 1
+        except Exception:
+            pass
+    for i in range(start, len(parts)):
+        bot.send_message(uid, parts[i], reply_markup=kb if i == len(parts) - 1 else None,
+                         disable_web_page_preview=True)
 
 
 # ======================= ПОЛЬЗОВАТЕЛИ БОТА (ТОЛЬКО ВЛАДЕЛЕЦ) =======================
@@ -329,6 +381,11 @@ def _quick_values(field, p, start_at=None):
         if not 0 <= n <= 1_000_000:
             raise ValueError
         return {"max_players": n}
+    if field == "target":
+        n = int(p[2])
+        if not 1 <= n <= 1_000_000:
+            raise ValueError
+        return {"max_players": n}
     if field == "start":
         return {"start_at": None}
     minutes = int(p[2])
@@ -347,13 +404,14 @@ def quick_choice(call, cmd, p):
         draw_id = int(p[1])
     except (IndexError, ValueError):
         return answer(call)
-    if cmd in ("qwc", "qmc", "qsc", "qec"):
+    if cmd in ("qwc", "qmc", "qsc", "qec", "qtc"):
         hint = {"qwc": q["custom_winners"].format(max=config.MAX_WINNERS),
                 "qmc": q["custom_max"],
+                "qtc": q["custom_target"],
                 "qsc": q["custom_start"].format(tz=tz_name(user_tz(uid), uid)),
                 "qec": q["custom_end"].format(tz=tz_name(user_tz(uid), uid))}[cmd]
         return answer(call, hint, True)
-    field = {"qw": "winners", "qm": "max", "qs": "start", "qe": "end"}[cmd]
+    field = {"qw": "winners", "qm": "max", "qt": "target", "qs": "start", "qe": "end"}[cmd]
     if draw_id == 0:
         state, data = fsm.get_state(uid)
         if state != f"c_{field}":
@@ -509,23 +567,42 @@ def h_chat(m, t, data, state):
     ask(uid, field)
 
 
-def advance_create(uid, data, field, values):
-    data.update(ser(values))
-    state = f"c_{field}"
-    idx = CREATE_FLOW.index(state)
-    if idx + 1 < len(CREATE_FLOW):
-        nxt = CREATE_FLOW[idx + 1]
-        fsm.set_state(uid, nxt, **data)
-        return ask(uid, FIELD_OF[nxt])
+DRAW_CREATE_FIELDS = ("channel_id", "channel_name", "channel_username", "text", "file_type",
+                      "file_id", "winners_count", "max_players", "start_at", "end_at", "finish_mode")
 
-    vals = dict(data)
+
+def _create_draw(uid, data):
+    vals = {k: data.get(k) for k in DRAW_CREATE_FIELDS if data.get(k) is not None}
     for k in ("start_at", "end_at"):
-        vals[k] = datetime.fromisoformat(vals[k]) if vals.get(k) else None
+        v = vals.get(k)
+        if isinstance(v, str):
+            vals[k] = datetime.fromisoformat(v)
+    if vals.get("finish_mode") == "count":
+        vals.pop("end_at", None)
     d = db.new(models.Draw, owner_id=str(uid), status="draft",
                button_text=T(uid)["post"]["join_default"], **vals)
     fsm.remove_state(uid)
     bot.send_message(uid, T(uid)["common"]["ok"], reply_markup=keyboard.main_menu(uid))
     middleware.show_draft(uid, d.id)
+
+
+def advance_create(uid, data, field, values):
+    data.update(ser(values))
+    if field == "start":
+        fsm.set_state(uid, "c_mode", **data)
+        return ask_mode(uid)
+    if field == "target":
+        if data.get("finish_mode") == "both":
+            fsm.set_state(uid, "c_end", **data)
+            return ask(uid, "end")
+        return _create_draw(uid, data)
+    if field == "end":
+        return _create_draw(uid, data)
+    nxt = {"text": "c_media", "media": "c_winners", "winners": "c_start"}.get(field)
+    if nxt:
+        fsm.set_state(uid, nxt, **data)
+        return ask(uid, FIELD_OF[nxt])
+    return _create_draw(uid, data)
 
 
 def h_create(m, t, data, state):
@@ -535,6 +612,10 @@ def h_create(m, t, data, state):
     if err:
         return bot.send_message(uid, err, reply_markup=kb_for(uid, field))
     advance_create(uid, data, field, values)
+
+
+def h_mode(m, t, data, state):
+    return ask_mode(m.chat.id)
 
 
 def h_edit(m, t, data, state):
@@ -549,7 +630,12 @@ def h_edit(m, t, data, state):
         "end_at": d.end_at and d.end_at.isoformat()}))
     if err:
         return bot.send_message(uid, err, reply_markup=kb_for(uid, field, d.id))
+    if field == "end" and (getattr(d, "finish_mode", "time") == "count"):
+        values["finish_mode"] = "both"
     db.update(models.Draw, values, id=d.id)
+    if field == "target" and getattr(d, "finish_mode", "time") == "both" and not d.end_at:
+        fsm.set_state(uid, "e_input", draw_id=d.id, field="end")
+        return ask(uid, "end", d.id)
     fsm.remove_state(uid)
     bot.send_message(uid, t["common"]["saved"], reply_markup=keyboard.main_menu(uid))
     middleware.show_draft(uid, d.id, preview=field in ("text", "media", "btn"))
@@ -577,8 +663,8 @@ def h_sub_add(m, t, data, state):
     middleware.show_subs(uid, d.id)
 
 
-STATE_HANDLERS = {"c_chat": h_chat, "e_input": h_edit, "s_add": h_sub_add,
-                  **{s: h_create for s in CREATE_FLOW}}
+STATE_HANDLERS = {**{s: h_create for s in CREATE_FLOW},
+                  "c_chat": h_chat, "c_mode": h_mode, "e_input": h_edit, "s_add": h_sub_add}
 
 
 def go_back(uid, state, data):
@@ -683,8 +769,14 @@ def do_publish(uid, d, call):
     t = T(uid)
     now = utcnow()
     start = d.start_at if (d.start_at and d.start_at > now) else now
-    if d.end_at is None or d.end_at <= now or start >= d.end_at:
-        return answer(call, t["draw"]["over_time"], True)
+    mode = middleware.finish_mode(d)
+    if mode in ("time", "both"):
+        if d.end_at is None:
+            return answer(call, t["draw"]["need_end"], True)
+        if d.end_at <= now or start >= d.end_at:
+            return answer(call, t["draw"]["over_time"], True)
+    if mode in ("count", "both") and not d.max_players:
+        return answer(call, t["draw"]["need_target"], True)
     if not db.update(models.Draw, {"status": "scheduled", "start_at": start}, id=d.id, status="draft"):
         return answer(call, t["draw"]["not_editable"], True)
     answer(call)
@@ -730,6 +822,72 @@ def channel_reroll(call, raw_id):
     middleware.finish_draw(d.id, reroll=True)
 
 
+def choose_mode(call, p):
+    uid = call.from_user.id
+    t = T(uid)
+    try:
+        draw_id, mode = int(p[1]), p[2]
+    except (IndexError, ValueError):
+        return answer(call)
+    if mode not in ("time", "count", "both"):
+        return answer(call)
+
+    if draw_id == 0:
+        state, data = fsm.get_state(uid)
+        if state != "c_mode":
+            return answer(call, t["common"]["stale"], True)
+        data["finish_mode"] = mode
+        answer(call)
+        _clear_buttons(uid, call)
+        if mode in ("count", "both"):
+            fsm.set_state(uid, "c_target", **data)
+            return ask(uid, "target")
+        fsm.set_state(uid, "c_end", **data)
+        return ask(uid, "end")
+
+    d = owned(call, str(draw_id))
+    if d is None:
+        return
+    if d.status != "draft":
+        return answer(call, t["draw"]["not_editable"], True)
+    db.update(models.Draw, {"finish_mode": mode, "end_at": None} if mode == "count"
+              else {"finish_mode": mode}, id=d.id)
+    answer(call)
+    _clear_buttons(uid, call)
+    d = db.get_one(models.Draw, id=d.id)
+    if mode == "both" and not d.max_players:
+        fsm.set_state(uid, "e_input", draw_id=d.id, field="target")
+        return ask(uid, "target", d.id)
+    if mode in ("time", "both") and not d.end_at:
+        fsm.set_state(uid, "e_input", draw_id=d.id, field="end")
+        return ask(uid, "end", d.id)
+    if mode in ("count", "both") and not d.max_players:
+        fsm.set_state(uid, "e_input", draw_id=d.id, field="target")
+        return ask(uid, "target", d.id)
+    return show_settings(uid, d, call.message)
+
+
+def handle_boost(call):
+    uid = call.from_user.id
+    t = T(uid, call.from_user.language_code)["post"]
+    try:
+        draw_id = int((call.data or "").split(":")[1])
+    except (IndexError, ValueError):
+        return answer(call)
+    d = db.get_one(models.Draw, id=draw_id)
+    if not d or d.status != "active":
+        return answer(call, t["boost_finished"], True)
+    if not getattr(d, "boost_enabled", 0):
+        return answer(call, t["boost_disabled"], True)
+    player = db.get_one(models.Player, draw_id=d.id, user_id=str(uid))
+    if not player:
+        return answer(call, t["not_participating"], True)
+    count = middleware.refresh_boost_count(d, uid)
+    db.update(models.Player, {"boost_count": count}, id=player.id)
+    middleware.send_ticket_info(call.from_user, d)
+    return answer(call, t["boost_checked"].format(n=count))
+
+
 @bot.callback_query_handler(func=lambda c: True)
 def on_callback(call):
     try:
@@ -757,6 +915,20 @@ def route_callback(call):
     if cmd == "cap":
         text, alert = middleware.handle_captcha(call)
         return answer(call, text or None, alert)
+    if cmd == "boost":
+        return handle_boost(call)
+    if cmd == "res":
+        try:
+            draw_id = int(p[1])
+        except (IndexError, ValueError):
+            return answer(call)
+        d = db.get_one(models.Draw, id=draw_id)
+        if not d or d.status != "finished":
+            return answer(call, t["post"]["results_not_ready"], True)
+        if call.message is not None and call.message.chat.type == "private" and d.owner_id == str(uid):
+            answer(call)
+            return show_results(uid, d, call.message)
+        return show_results(uid, d, call=call, public=True)
 
     if cmd == "usr":
         if not is_users_admin(uid, getattr(call.from_user, "username", None)):
@@ -789,7 +961,9 @@ def route_callback(call):
         return answer(call, t["channels"]["not_admin"], True)
     if cmd == "ch":
         return begin_create(uid, p[1] if len(p) > 1 else "", call)
-    if cmd in ("qw", "qm", "qs", "qe", "qwc", "qmc", "qsc", "qec"):
+    if cmd == "mode":
+        return choose_mode(call, p)
+    if cmd in ("qw", "qm", "qt", "qs", "qe", "qwc", "qmc", "qtc", "qsc", "qec"):
         return quick_choice(call, cmd, p)
     if cmd == "rr":
         return channel_reroll(call, p[1] if len(p) > 1 else "")
@@ -837,12 +1011,8 @@ def route_callback(call):
         answer(call)
         return bot.send_document(uid, data, caption=t["my"]["players_caption"].format(id=d.id, n=n))
     if cmd == "win":
-        winners = middleware.load_winners(d)
         answer(call)
-        text = middleware.winners_text(winners) if winners else t["post"]["no_winners"]
-        for part in middleware.split_text(text):
-            bot.send_message(uid, part, disable_web_page_preview=True)
-        return
+        return show_results(uid, d, call.message)
     if cmd == "cf":
         action = p[2] if len(p) > 2 else ""
         ok = {"del": d.status != "active",
@@ -870,6 +1040,22 @@ def route_callback(call):
         return middleware.show_draft(uid, d.id)
     if d.status != "draft":
         return answer(call, t["draw"]["not_editable"], True)
+
+    if cmd == "fmt":
+        answer(call)
+        return show_settings(uid, d, call.message)
+    if cmd == "tog":
+        field = p[2] if len(p) > 2 else ""
+        if field not in ("refs", "boost"):
+            return answer(call)
+        key = "refs_enabled" if field == "refs" else "boost_enabled"
+        new = 0 if getattr(d, key) else 1
+        values = {key: new}
+        if field == "boost" and new and not d.boost_tickets:
+            values["boost_tickets"] = config.BOOST_TICKETS_DEFAULT
+        db.update(models.Draw, values, id=d.id)
+        answer(call)
+        return show_settings(uid, db.get_one(models.Draw, id=d.id), call.message)
 
     if cmd == "ed" and len(p) > 2 and p[2] in FIELDS:
         answer(call)

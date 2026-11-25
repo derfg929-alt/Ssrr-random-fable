@@ -86,15 +86,20 @@ class Draw(Model):
     file_type = Field("text")                   # text/photo/animation/video/document
     file_id = Field("")
     winners_count = Field(1)
-    max_players = Field(0)                      # 0 = без лимита
+    max_players = Field(0)                      # 0 = без лимита; для count/both — цель
     button_text = Field()                       # None = текст по умолчанию
     start_at = Field()                          # None = сразу при публикации
-    end_at = Field()
+    end_at = Field()                            # None = без срока (режим count)
+    finish_mode = Field("time")                 # time | count | both
+    refs_enabled = Field(0)                     # 1 = рефералы дают доп. билеты
+    boost_enabled = Field(0)                    # 1 = буст канала даёт доп. билеты
+    boost_tickets = Field(3)                    # сколько билетов за один буст
     status = Field("draft")
     message_id = Field()
     shown_count = Field(-1)                     # какое число сейчас на кнопке
     winners = Field("[]")                       # JSON [{"id":..., "name":..., "username":...}]
     rerolls = Field(0)                          # сколько раз переигрывали итоги
+    reroll_log = Field("[]")                    # JSON [{"at":..., "winners":[...]}, ...]
     finished_at = Field()
     created_at = Field(utcnow)
 
@@ -122,6 +127,7 @@ class Player(Model):
     user_id = Field()
     name = Field()
     username = Field()
+    boost_count = Field(0)                      # бустов канала на момент входа/проверки
     joined_at = Field(utcnow)
 
 

@@ -2,6 +2,7 @@ from urllib.parse import quote
 
 import telebot
 
+import config
 from tool import T, bot_username, get_user, ikb, is_users_admin, short, fmt_dt, user_tz
 
 PAGE_SIZE = 8
@@ -56,6 +57,7 @@ def channels_kb(user_id, chats, mode="create", draw_id=None):
 # ---- Быстрые кнопки мастера ----
 QUICK_WINNERS = (1, 2, 3, 5, 10, 25, 50, 100)
 QUICK_MAX = (0, 10, 50, 100, 500, 1000)
+QUICK_TARGET = (10, 50, 100, 500, 1000)
 QUICK_END = (("h1", 60), ("h6", 360), ("h12", 720),
              ("d1", 1440), ("d3", 4320), ("d7", 10080), ("d30", 43200))
 
@@ -71,6 +73,10 @@ def quick_kb(user_id, field, draw_id=None):
         rows = [[(t["no_limit"] if n == 0 else str(n), f"qm:{i}:{n}") for n in QUICK_MAX[j:j + 3]]
                 for j in range(0, len(QUICK_MAX), 3)]
         rows.append([(t["custom"], f"qmc:{i}")])
+    elif field == "target":
+        rows = [[(str(n), f"qt:{i}:{n}") for n in QUICK_TARGET[j:j + 3]]
+                for j in range(0, len(QUICK_TARGET), 3)]
+        rows.append([(t["custom_target"], f"qtc:{i}")])
     elif field == "start":
         rows = [[(t["now"], f"qs:{i}:now")], [(t["custom"], f"qsc:{i}")]]
     elif field == "end":
@@ -91,6 +97,18 @@ def _pretty_join_label(label):
     return label or "🎉"
 
 
+def _boost_url(draw):
+    username = (getattr(draw, "channel_username", "") or "").lstrip("@")
+    if username:
+        return f"https://t.me/boost/{username}"
+    cid = str(getattr(draw, "channel_id", "") or "")
+    if cid.startswith("-100"):
+        cid = cid[4:]
+    elif cid.startswith("-"):
+        return ""
+    return f"https://t.me/boost/?channel={cid}" if cid else ""
+
+
 def join_kb(draw, count=0, preview=False, styled=True):
     label = _pretty_join_label(draw.button_text or T(draw.owner_id)["post"]["join_default"])
     if count:
@@ -105,6 +123,11 @@ def join_kb(draw, count=0, preview=False, styled=True):
     style = "success" if styled else None
     row = (label, target) + ((style,) if style else ())
     rows = [[row]]
+    if getattr(draw, "boost_enabled", 0):
+        boost_target = "noop" if preview else _boost_url(draw)
+        if boost_target:
+            n = getattr(draw, "boost_tickets", 0) or config.BOOST_TICKETS_DEFAULT
+            rows.append([(T(draw.owner_id)["post"]["boost_button"].format(n=n), boost_target, "primary")])
     if not preview and username:
         rows.append([(T(draw.owner_id)["post"]["bot_button"], f"https://t.me/{username}")])
     return ikb(rows)
@@ -135,9 +158,61 @@ def draft_kb(user_id, d):
         [(b["winners"], f"ed:{i}:winners"), (b["text"], f"ed:{i}:text")],
         [(b["media"], f"ed:{i}:media"), (b["button"], f"ed:{i}:btn")],
         [(b["subs"], f"subs:{i}"), (b["max"], f"ed:{i}:max")],
+        [(b["settings"], f"fmt:{i}")],
         [(b["publish"], f"pub:{i}")],
         [(b["delete"], f"cf:{i}:del")],
     ])
+
+
+def mode_kb(user_id, draw_id=0):
+    t = T(user_id)["draw"]["mode"]
+    i = draw_id or 0
+    return ikb([
+        [(t["time"], f"mode:{i}:time")],
+        [(t["count"], f"mode:{i}:count")],
+        [(t["both"], f"mode:{i}:both")],
+    ])
+
+
+def settings_kb(user_id, d):
+    t = T(user_id)["draw"]["settings"]
+    i = d.id
+    mode = getattr(d, "finish_mode", "time") or "time"
+    if mode == "both" and not d.max_players:
+        mode = "time"
+
+    def mode_btn(key):
+        mark = "✅ " if mode == key else ""
+        return (mark + t["mode_" + key], f"mode:{i}:{key}")
+
+    rows = [
+        [mode_btn("time"), mode_btn("count")],
+        [mode_btn("both")],
+    ]
+    if mode in ("count", "both"):
+        rows.append([(t["target"].format(n=d.max_players or 0), f"ed:{i}:target")])
+    else:
+        limit = d.max_players or T(user_id)["common"]["unlimited"]
+        rows.append([(t["limit"].format(n=limit), f"ed:{i}:max")])
+    rows.append([(t["refs_on"] if d.refs_enabled else t["refs_off"], f"tog:{i}:refs")])
+    rows.append([(t["boost_on"].format(n=d.boost_tickets or config.BOOST_TICKETS_DEFAULT)
+                  if d.boost_enabled else t["boost_off"], f"tog:{i}:boost")])
+    rows.append([(t["back"], f"dr:{i}")])
+    return ikb(rows)
+
+
+def results_kb(user_id, draw_id, back=True, bot=True, button=False):
+    t = T(user_id)
+    rows = []
+    if back:
+        rows.append([(t["common"]["back"], f"v:{draw_id}")])
+    if button:
+        rows.append([(t["post"]["results_button"], f"res:{draw_id}")])
+    if bot:
+        username = bot_username()
+        if username:
+            rows.append([(t["post"]["bot_button"], f"https://t.me/{username}")])
+    return ikb(rows) if rows else None
 
 
 def subs_kb(user_id, d, subs):
@@ -170,7 +245,10 @@ def list_kb(user_id, draws, page, total):
     icons = t["status_icons"]
     rows = []
     for d in draws:
-        label = f"{icons[d.status]} #{d.id} {short(d.channel_name, 18)} · {fmt_dt(d.end_at, tz)}"
+        mode = getattr(d, "finish_mode", "time")
+        when = f"👥 {d.max_players}" if (mode == "count" or (mode == "both" and d.max_players)) \
+            else fmt_dt(d.end_at, tz)
+        label = f"{icons[d.status]} #{d.id} {short(d.channel_name, 18)} · {when}"
         rows.append([(label, f"v:{d.id}")])
     nav = []
     pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
@@ -199,7 +277,7 @@ def card_kb(user_id, d, link=None):
         rows.append([(b["cancel"], f"cf:{i}:cancel")]
                     + ([(b["share"], share_url(user_id, d, link))] if link else []))
     elif d.status == "finished":
-        rows.append([(b["winners"], f"win:{i}"), (b["players"], f"pl:{i}")])
+        rows.append([(b["results"], f"res:{i}"), (b["players"], f"pl:{i}")])
         rows.append([(b["reroll"], f"cf:{i}:rr"), (b["reroll_exclude"], f"cf:{i}:rrx")])
         rows.append(([(b["share"], share_url(user_id, d, link))] if link else [])
                     + [(b["delete"], f"cf:{i}:del")])
