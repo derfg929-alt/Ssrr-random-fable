@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 import telebot
 
 from tool import T, bot_username, get_user, ikb, is_users_admin, short, fmt_dt, user_tz
@@ -94,15 +96,26 @@ def join_kb(draw, count=0, preview=False, styled=True):
     if count:
         label = f"{label} · {count}"
     label = short(label, 64)
+    username = "" if preview else bot_username()
     if preview:
         target = "noop"
     else:
-        username = bot_username()
         # Кнопка-ссылка открывает бота и переживает пересылку поста.
         target = f"https://t.me/{username}?start=join_{draw.id}" if username else f"join:{draw.id}"
     style = "success" if styled else None
     row = (label, target) + ((style,) if style else ())
-    return ikb([[row]])
+    rows = [[row]]
+    if not preview and username:
+        rows.append([(T(draw.owner_id)["post"]["bot_button"], f"https://t.me/{username}")])
+    return ikb(rows)
+
+
+def bot_kb(user_id):
+    """Кнопка «открыть бота» для итогов розыгрыша — приводит новых пользователей."""
+    username = bot_username()
+    if not username:
+        return None
+    return ikb([[(T(user_id)["post"]["bot_button"], f"https://t.me/{username}")]])
 
 
 # ---- Капча: выбор номера картинки ----
@@ -170,6 +183,11 @@ def list_kb(user_id, draws, page, total):
     return ikb(rows)
 
 
+def share_url(user_id, d, link):
+    text = T(user_id)["my"]["share_text"].format(id=d.id, channel=d.channel_name or "")
+    return "https://t.me/share/url?url=" + quote(link, safe="") + "&text=" + quote(text, safe="")
+
+
 def card_kb(user_id, d, link=None):
     b = T(user_id)["my"]["btn"]
     i = d.id
@@ -178,9 +196,15 @@ def card_kb(user_id, d, link=None):
         rows.append([(b["edit"], f"ed:{i}:open"), (b["delete"], f"cf:{i}:del")])
     elif d.status == "active":
         rows.append([(b["players"], f"pl:{i}"), (b["finish"], f"cf:{i}:fin")])
+        rows.append([(b["cancel"], f"cf:{i}:cancel")]
+                    + ([(b["share"], share_url(user_id, d, link))] if link else []))
     elif d.status == "finished":
         rows.append([(b["winners"], f"win:{i}"), (b["players"], f"pl:{i}")])
-        rows.append([(b["reroll"], f"cf:{i}:rr"), (b["delete"], f"cf:{i}:del")])
+        rows.append([(b["reroll"], f"cf:{i}:rr"), (b["reroll_exclude"], f"cf:{i}:rrx")])
+        rows.append(([(b["share"], share_url(user_id, d, link))] if link else [])
+                    + [(b["delete"], f"cf:{i}:del")])
+    elif d.status == "cancelled":
+        rows.append([(b["delete"], f"cf:{i}:del")])
     if link:
         rows.append([(b["link"], link)])
     rows.append([(b["back"], "lst:0")])

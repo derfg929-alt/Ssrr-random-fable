@@ -2,7 +2,7 @@
   "menu": {
     "welcome_text": "👋 Welcome to the giveaway bot!\n\nAdd the bot as a channel admin — it will appear in “My channels”, and creating a giveaway takes a couple of taps.\n\nChoose an action below.",
     "support": "💬 Support: <a href=\"https://t.me/Som_teg\">@Som_teg</a>\nDescribe the problem and attach a screenshot.",
-    "invite": "🎁 Invite your friends!\nShare the bot link: {link}",
+    "invite": "🎁 Invite your friends!\nYour personal link: {link}\n👥 Invited: {invited}\n\nShare the link with friends — they can join giveaways.",
     "buttons": {
       "create": "🎉 Create giveaway",
       "my": "📋 My giveaways",
@@ -11,7 +11,10 @@
       "invite": "🎁 Invite",
       "channels": "📣 My channels",
       "users": "👥 Users"
-    }
+    },
+    "invited_notice": "🎉 Someone joined via your link! Total invited: {invited}",
+    "invite_share": "📤 Share",
+    "invite_share_text": "🎁 Check out the giveaway bot!"
   },
   "common": {
     "back": "⬅️ Back",
@@ -26,7 +29,8 @@
     "deleted": "🗑 Deleted",
     "not_found": "Giveaway not found.",
     "not_yours": "This is not your giveaway.",
-    "stale": "This button is outdated. Open the step again."
+    "stale": "This button is outdated. Open the step again.",
+    "cancelled": "🚫 Cancelled"
   },
   "status_icons": {
     "draft": "📝",
@@ -96,7 +100,8 @@
       "button": "Button",
       "subs": "Extra subscriptions",
       "players": "Participants",
-      "on_publish": "right after publishing"
+      "on_publish": "right after publishing",
+      "rerolls": "Redraws"
     }
   },
   "subs": {
@@ -125,13 +130,19 @@
       "winners": "🏆 Winners",
       "reroll": "🔄 Redraw",
       "link": "🔗 Link",
-      "back": "⬅️ To list"
+      "back": "⬅️ To list",
+      "reroll_exclude": "🎲 Exclude previous",
+      "share": "📤 Share",
+      "cancel": "🚫 Cancel"
     },
     "confirm": {
       "del": "Delete giveaway #{id}? This cannot be undone.",
       "fin": "Finish giveaway #{id} and pick winners?",
-      "rr": "Redraw giveaway #{id}? Winners will be picked again."
-    }
+      "rr": "Redraw giveaway #{id}? Winners will be picked again.",
+      "rrx": "Redraw giveaway #{id} excluding previous winners? If there are not enough new participants, winners will be picked from everyone.",
+      "cancel": "Cancel giveaway #{id}? Joining will be closed."
+    },
+    "share_text": "🎉 Giveaway #{id} in {channel} — join now!"
   },
   "post": {
     "join_default": "🎉 Join",
@@ -148,7 +159,15 @@
     "full": "Registration is closed.",
     "joined": "✅ You are in! Good luck!",
     "not_subscribed": "Please subscribe first: {channels}",
-    "check_failed": "Could not check your subscription. Try again later."
+    "check_failed": "Could not check your subscription. Try again later.",
+    "bot_button": "🤖 Bot",
+    "more_giveaways": "🤖 More giveaways: {bot}",
+    "reroll_button": "🔄 Redraw",
+    "reroll_done": "🔄 Winners have been redrawn.",
+    "reroll_fallback": "ℹ️ Not enough new participants, so winners were picked from everyone.",
+    "owner_report_reroll": "Giveaway #{id} in {channel} was redrawn (redraws: {rerolls}).\nParticipants: {n}\nWinners:\n{winners}",
+    "cancelled_button": "🚫 Cancelled · {n}",
+    "cancelled_announce": "🚫 The giveaway was cancelled."
   },
   "channels": {
     "title": "📣 Channels where the bot is an admin\n\nPick a channel for the giveaway:",

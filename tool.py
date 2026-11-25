@@ -106,14 +106,15 @@ TIME_FORMATS = ("%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M", "%d.%m %H:%M")
 def parse_local_time(text, tz_minutes):
     """Строка во времени пользователя -> наивный UTC datetime (или None)."""
     text = (text or "").strip().replace(",", " ")
+    now_local = models.utcnow() + timedelta(minutes=tz_minutes)
     for fmt in TIME_FORMATS:
         try:
             dt = datetime.strptime(text, fmt)
         except ValueError:
             continue
         if "%Y" not in fmt:
-            dt = dt.replace(year=models.utcnow().year)
-            if dt < models.utcnow() - timedelta(minutes=1):  # «31.12» без года = ближайший будущий год
+            dt = dt.replace(year=now_local.year)
+            if dt < now_local - timedelta(minutes=1):  # «31.12» без года = ближайший будущий год
                 dt = dt.replace(year=dt.year + 1)
         return dt - timedelta(minutes=tz_minutes)
     return None

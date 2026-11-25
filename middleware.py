@@ -220,6 +220,8 @@ def draw_summary(uid, d):
     ]
     if d.status in ("active", "finished"):
         lines.append(f"<b>{s['players']}:</b> {db.count(models.Player, draw_id=d.id)}")
+    if d.status == "finished" and (d.rerolls or 0):
+        lines.append(f"<b>{s['rerolls']}:</b> {d.rerolls}")
     return "\n".join(lines)
 
 
@@ -457,35 +459,109 @@ def publish_draw(draw_id):
     return True, post_link(db.get_one(models.Draw, id=d.id))
 
 
-def pick_winners(draw_id, count):
-    players = db.select_all(models.Player, order_by=models.Player.id, draw_id=draw_id)
-    chosen = _rng.sample(players, min(count, len(players))) if players else []
-    return len(players), [{"id": p.user_id, "name": p.name or p.username or p.user_id} for p in chosen]
+def load_winners(d):
+    try:
+        data = json.loads(getattr(d, "winners", None) or "[]")
+        return data if isinstance(data, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def winner_line(index, w):
+    """Строка победителя: @username (ссылка), иначе имя со ссылкой tg://user."""
+    if not isinstance(w, dict):
+        return f"{index}. {esc(str(w))}"
+    username = str(w.get("username") or "").lstrip("@")
+    name = esc(str(w.get("name") or ""))
+    if username:
+        label = f"@{esc(username)}"
+        return f'{index}. <a href="https://t.me/{esc(username)}">{label}</a>' + (f" — {name}" if name else "")
+    uid = w.get("id")
+    if uid:
+        return f'{index}. <a href="tg://user?id={esc(str(uid))}">{name or esc(str(uid))}</a>'
+    return f"{index}. {name}"
 
 
 def winners_text(winners):
-    return "\n".join(
-        f'{i}. <a href="tg://user?id={w["id"]}">{esc(w["name"])}</a>' for i, w in enumerate(winners, 1))
+    return "\n".join(winner_line(i, w) for i, w in enumerate(winners, 1))
 
 
-def _chunks(winners, size=40):
-    return [winners[i:i + size] for i in range(0, len(winners), size)]
+def _winner_chunks(winners, limit=3500):
+    chunks, cur, size = [], [], 0
+    for i, w in enumerate(winners, 1):
+        line = winner_line(i, w)
+        if cur and size + len(line) + 1 > limit:
+            chunks.append("\n".join(cur))
+            cur, size = [], 0
+        cur.append(line)
+        size += len(line) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
+
+
+def split_text(text, limit=3500):
+    """Режет длинный HTML-текст по строкам, чтобы Telegram не ругался на лимит 4096."""
+    parts, cur, size = [], [], 0
+    for line in (text or "").split("\n"):
+        while len(line) > limit:
+            if cur:
+                parts.append("\n".join(cur))
+                cur, size = [], 0
+            parts.append(line[:limit])
+            line = line[limit:]
+        if cur and size + len(line) + 1 > limit:
+            parts.append("\n".join(cur))
+            cur, size = [], 0
+        cur.append(line)
+        size += len(line) + 1
+    if cur:
+        parts.append("\n".join(cur))
+    return parts or [""]
+
+
+def pick_winners(draw_id, count, exclude_ids=None):
+    """Выбирает победителей. Возвращает (всего_участников, победители, был_ли_откат)."""
+    players = db.select_all(models.Player, order_by=models.Player.id, draw_id=draw_id)
+    pool, fallback = players, False
+    if exclude_ids:
+        exclude = {str(x) for x in exclude_ids}
+        fresh = [p for p in players if str(p.user_id) not in exclude]
+        if len(fresh) >= count:
+            pool = fresh
+        else:
+            # Новых участников не хватает — выбираем из всех, чтобы выдать нужное число.
+            fallback = bool(players)
+    chosen = _rng.sample(pool, min(count, len(pool))) if pool else []
+    winners = [{"id": p.user_id, "name": p.name or p.username or p.user_id,
+                "username": p.username or ""} for p in chosen]
+    return len(players), winners, fallback
 
 
 def announce(d, winners, reroll):
     """Публикует список победителей ответом на пост. True, если получилось."""
     t = T(d.owner_id)["post"]
     if winners:
-        parts = [winners_text(c) for c in _chunks(winners)]
+        parts = _winner_chunks(winners)
         parts[0] = t["reroll_title" if reroll else "winners_title"] + "\n" + parts[0]
     else:
         parts = [t["no_winners"]]
-    for part in parts:
+    username = bot_username()
+    if username:
+        parts[-1] += "\n\n" + t["more_giveaways"].format(bot=f"@{username}")
+    markup = keyboard.bot_kb(d.owner_id)
+    for idx, part in enumerate(parts):
+        kw = {}
+        if d.message_id:
+            kw["reply_to_message_id"] = d.message_id
+        if idx == len(parts) - 1 and markup is not None:
+            kw["reply_markup"] = markup
         try:
-            bot.send_message(d.channel_id, part, reply_to_message_id=d.message_id)
+            bot.send_message(d.channel_id, part, **kw)
         except Exception:
+            kw.pop("reply_to_message_id", None)
             try:
-                bot.send_message(d.channel_id, part)
+                bot.send_message(d.channel_id, part, **kw)
             except Exception:
                 return False
     return True
@@ -493,25 +569,39 @@ def announce(d, winners, reroll):
 
 def close_post_button(d, n_players):
     t = T(d.owner_id)["post"]
+    rows = [[(t["finished_button"].format(n=n_players), "done")],
+            [(t["reroll_button"], f"rr:{d.id}")]]
+    username = bot_username()
+    if username:
+        rows.append([(t["bot_button"], f"https://t.me/{username}")])
     try:
-        bot.edit_message_reply_markup(
-            d.channel_id, d.message_id,
-            reply_markup=ikb([[(t["finished_button"].format(n=n_players), "done")]]))
+        bot.edit_message_reply_markup(d.channel_id, d.message_id, reply_markup=ikb(rows))
     except Exception:
         pass
 
 
-def finish_draw(draw_id, reroll=False):
+def finish_draw(draw_id, reroll=False, exclude_previous=False):
     """Завершает розыгрыш (или переигрывает уже завершённый). Возвращает True/False."""
     if reroll:
-        if not db.get_one(models.Draw, id=draw_id, status="finished"):
+        d = db.get_one(models.Draw, id=draw_id, status="finished")
+        if not d:
             return False
-    elif not db.update(models.Draw, {"status": "finished"}, id=draw_id, status="active"):
-        return False
+    else:
+        if not db.update(models.Draw, {"status": "finished", "finished_at": utcnow()},
+                         id=draw_id, status="active"):
+            return False
+        d = db.get_one(models.Draw, id=draw_id)
 
-    d = db.get_one(models.Draw, id=draw_id)
-    n_players, winners = pick_winners(d.id, d.winners_count)
-    db.update(models.Draw, {"winners": json.dumps(winners, ensure_ascii=False)}, id=d.id)
+    previous = load_winners(d)
+    exclude_ids = ({str(w.get("id")) for w in previous if isinstance(w, dict)}
+                   if exclude_previous else None)
+    n_players, winners, fallback = pick_winners(d.id, d.winners_count, exclude_ids)
+    rerolls = (d.rerolls or 0) + (1 if reroll else 0)
+    values = {"winners": json.dumps(winners, ensure_ascii=False), "rerolls": rerolls}
+    if not d.finished_at:
+        values["finished_at"] = utcnow()
+    db.update(models.Draw, values, id=d.id)
+    d = db.get_one(models.Draw, id=d.id)
     if not reroll:
         close_post_button(d, n_players)
 
@@ -519,38 +609,101 @@ def finish_draw(draw_id, reroll=False):
     link = post_link(d)
     t = T(d.owner_id)["post"]
 
-    # отчёт владельцу
-    report = t["owner_report"].format(
-        id=d.id, channel=esc(d.channel_name or ""), n=n_players,
+    # отчёт владельцу (режем на части: победителей может быть много)
+    report = t["owner_report_reroll" if reroll else "owner_report"].format(
+        id=d.id, channel=esc(d.channel_name or ""), n=n_players, rerolls=rerolls,
         winners=winners_text(winners) if winners else t["no_winners"])
+    if fallback:
+        report += "\n\n" + t["reroll_fallback"]
     if not posted:
         report += "\n\n" + t["announce_failed"]
-    try:
-        bot.send_message(d.owner_id, report, disable_web_page_preview=True)
-    except Exception:
-        pass
+    for part in split_text(report):
+        try:
+            bot.send_message(d.owner_id, part, disable_web_page_preview=True)
+        except Exception:
+            break
 
     # личное сообщение победителям (получат только те, кто запускал бота)
+    username = bot_username()
     for w in winners:
         try:
             wt = T(w["id"])["post"]
             text = wt["winner_dm"].format(channel=esc(d.channel_name or ""))
             if link:
                 text += f"\n{link}"
-            bot.send_message(w["id"], text, disable_web_page_preview=True)
+            if username:
+                text += "\n\n" + wt["more_giveaways"].format(bot=f"@{username}")
+            bot.send_message(w["id"], text, disable_web_page_preview=True,
+                             reply_markup=keyboard.bot_kb(w["id"]))
         except Exception:
             pass
         time.sleep(0.05)
     return True
 
 
+def cancel_draw(draw_id):
+    """Отменяет запланированный или активный розыгрыш."""
+    d = db.get_one(models.Draw, id=draw_id)
+    if not d or d.status not in ("scheduled", "active"):
+        return False
+    old = d.status
+    if not db.update(models.Draw, {"status": "cancelled"}, id=draw_id, status=old):
+        return False
+    t = T(d.owner_id)["post"]
+    if old == "active" and d.message_id:
+        n = db.count(models.Player, draw_id=d.id)
+        rows = [[(t["cancelled_button"].format(n=n), "done")]]
+        username = bot_username()
+        if username:
+            rows.append([(t["bot_button"], f"https://t.me/{username}")])
+        try:
+            bot.edit_message_reply_markup(d.channel_id, d.message_id, reply_markup=ikb(rows))
+        except Exception:
+            pass
+        try:
+            bot.send_message(d.channel_id, t["cancelled_announce"],
+                             reply_to_message_id=d.message_id)
+        except Exception:
+            pass
+    _synced.discard(d.id)
+    _last_edit.pop(d.id, None)
+    return True
+
+
+def register_referral(invited_id, inviter_id):
+    """Запоминает, кто пригласил пользователя, и уведомляет пригласившего."""
+    try:
+        inviter_id = str(int(inviter_id))
+    except (TypeError, ValueError):
+        return
+    invited_id = str(invited_id)
+    if inviter_id == invited_id or not db.get_one(models.User, user_id=inviter_id):
+        return
+    invited = db.get_one(models.User, user_id=invited_id)
+    if not invited or invited.referred_by:
+        return
+    db.update(models.User, {"referred_by": inviter_id}, user_id=invited_id)
+    total = referral_count(inviter_id)
+    try:
+        bot.send_message(inviter_id, T(inviter_id)["menu"]["invited_notice"].format(invited=total),
+                         disable_web_page_preview=True)
+    except Exception:
+        pass
+
+
+def referral_count(user_id):
+    return db.count(models.User, referred_by=str(user_id))
+
+
 def players_csv(draw_id):
     players = db.select_all(models.Player, order_by=models.Player.id, draw_id=draw_id)
+    winner_ids = {str(w.get("id")) for w in load_winners(db.get_one(models.Draw, id=draw_id) or models.Draw())}
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
-    w.writerow(["n", "user_id", "username", "name", "joined_utc"])
+    w.writerow(["n", "user_id", "username", "name", "is_winner", "joined_utc"])
     for i, p in enumerate(players, 1):
         w.writerow([i, p.user_id, p.username or "", p.name or "",
+                    "yes" if str(p.user_id) in winner_ids else "",
                     p.joined_at.strftime("%Y-%m-%d %H:%M:%S") if p.joined_at else ""])
     data = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
     data.name = f"participants_{draw_id}.csv"
