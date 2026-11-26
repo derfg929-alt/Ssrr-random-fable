@@ -10,11 +10,22 @@
       "support": "💬 Support",
       "invite": "🎁 Invite",
       "channels": "📣 My channels",
-      "users": "👥 Users"
+      "users": "👥 Users",
+      "tickets": "🎫 My tickets",
+      "help": "❓ Help"
     },
     "invited_notice": "🎉 Someone joined via your link! Total invited: {invited}",
     "invite_share": "📤 Share",
-    "invite_share_text": "🎁 Check out the giveaway bot!"
+    "invite_share_text": "🎁 Check out the giveaway bot!",
+    "tickets_title": "🎫 Your tickets and chances:",
+    "no_tickets": "🎫 No entries yet. Find a giveaway in a channel and tap “Join”.",
+    "ticket_line": "#{id} · {channel} · 🎫 {tickets} · chance {chance}% · {status}",
+    "ticket_open": "🔗 Open post #{id}",
+    "help_text": "❓ <b>How this bot works</b>\n\n1. Add the bot as a channel admin (with “Post messages”).\n2. “🎉 Create giveaway” → channel → text → media → winners → time.\n3. Publish the post: people tap the button under it.\n\n🎫 “My tickets” shows your chances, 🎁 “Invite” gives your referral link.\n\nCommands: /start, /help, /mydata, /cancel.",
+    "my_data_text": "👤 <b>Your data</b>\n\nID: {id}\nUsername: {username}\nLanguage: {lang}\nFriends invited: {refs}\nJoined via your link: {invited}\nGiveaways joined: {draws}\n\nWe keep it to run giveaways and count tickets. You can delete it at any time.",
+    "delete_data": "🗑 Delete my data",
+    "delete_confirm": "Delete your data? Your entries in active giveaways will be removed and referral links broken.",
+    "deleted": "🗑 Your data has been deleted."
   },
   "common": {
     "back": "⬅️ Back",
@@ -30,7 +41,8 @@
     "not_found": "Giveaway not found.",
     "not_yours": "This is not your giveaway.",
     "stale": "This button is outdated. Open the step again.",
-    "cancelled": "🚫 Cancelled"
+    "cancelled": "🚫 Cancelled",
+    "unsupported": "This message type is not supported. Send text, a photo, a video, a GIF or a document."
   },
   "status_icons": {
     "draft": "📝",
@@ -114,7 +126,9 @@
       "boost": "Boosts",
       "on": "✅ on",
       "off": "❌ off",
-      "boost_on": "+{n} tickets per boost"
+      "boost_on": "+{n} tickets per boost",
+      "tickets": "Total tickets",
+      "boosts": "Channel boosts"
     },
     "prompt_target": "How many participants should trigger the end? Send a number from 1 to 1,000,000.",
     "prompt_mode": "🏁 How should the giveaway end?\n\n⏰ By time — on the specified date.\n👥 By participants — when the target number is reached.\n⏰+👥 Both — whichever comes first.",
@@ -137,7 +151,9 @@
       "boost_off": "🚀 Boosts: ❌ off",
       "back": "⬅️ Back"
     },
-    "need_end": "Set the giveaway end date."
+    "need_end": "Set the giveaway end date.",
+    "winners_over_target": "Winners ({winners}) exceed the participant target ({target}). Lower the winner count or raise the target.",
+    "private_channel_note": "ℹ️ This is a private channel: the post link will look like t.me/c/... and works for subscribers only."
   },
   "subs": {
     "add": "➕ Add channel",
@@ -226,7 +242,11 @@
     "not_participating": "First tap “Join” in the giveaway post.",
     "tickets_base": "Base: 1",
     "tickets_refs": "Referrals: {refs}",
-    "tickets_boost": "Boosts: {boost}×{per_boost}"
+    "tickets_boost": "Boosts: {boost}×{per_boost}",
+    "reminder_24h": "⏰ Giveaway #{id} in {channel} ends in 24 hours ({end}, {tz}).\nParticipants: {players}.",
+    "reminder_1h": "⏰ Giveaway #{id} in {channel} ends in an hour ({end}, {tz}).\nParticipants: {players}.",
+    "share_button": "📤 Share",
+    "share_text": "🎉 Join the giveaway!"
   },
   "channels": {
     "title": "📣 Channels where the bot is an admin\n\nPick a channel for the giveaway:",
@@ -277,6 +297,7 @@
     "wrong": "❌ Wrong. Try again.",
     "too_many": "🚫 Too many attempts. Please try later.",
     "expired": "⌛ This check has expired. Tap “Join” again.",
-    "open_bot": "To take part, open {bot} and press /start."
+    "open_bot": "To take part, open {bot} and press /start.",
+    "too_many_attempts": "🚫 Too many checks in a row. Please wait a few minutes."
   }
 }

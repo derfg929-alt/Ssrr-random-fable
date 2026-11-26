@@ -94,6 +94,17 @@ def T(user_id, code=None):
     return TEXTS[lang_of(user_id, code)]
 
 
+def draw_lang(d):
+    """Язык поста в канале: язык розыгрыша, иначе язык владельца."""
+    lang = getattr(d, "language", "") or ""
+    return lang if lang in TEXTS else lang_of(getattr(d, "owner_id", None))
+
+
+def TD(d):
+    """Тексты для того, кто читает канал (кнопки поста, итоги, отмена)."""
+    return TEXTS[draw_lang(d)]
+
+
 def user_tz(user_id):
     # Время всегда московское — выбор часового пояса убран
     return config.DEFAULT_TZ
@@ -108,14 +119,24 @@ def parse_local_time(text, tz_minutes):
     text = (text or "").strip().replace(",", " ")
     now_local = models.utcnow() + timedelta(minutes=tz_minutes)
     for fmt in TIME_FORMATS:
+        if "%Y" in fmt:
+            try:
+                dt = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            return dt - timedelta(minutes=tz_minutes)
+        # Год не указан: парсим с опорным годом, иначе Python 3.15 начнёт падать
+        # на неоднозначных датах вроде «29.02».
         try:
-            dt = datetime.strptime(text, fmt)
+            dt = datetime.strptime("2000 " + text, "%Y " + fmt)
         except ValueError:
             continue
-        if "%Y" not in fmt:
+        try:
             dt = dt.replace(year=now_local.year)
             if dt < now_local - timedelta(minutes=1):  # «31.12» без года = ближайший будущий год
                 dt = dt.replace(year=dt.year + 1)
+        except ValueError:  # 29.02 в невисокосный год
+            continue
         return dt - timedelta(minutes=tz_minutes)
     return None
 
@@ -129,6 +150,20 @@ def fmt_dt(dt, tz_minutes):
 def tz_name(minutes=180, uid=None):
     """Подпись часового пояса. Бот всегда работает по московскому времени."""
     return "МСК (UTC+3)" if (uid is None or lang_of(uid) == "RU") else "MSK (UTC+3)"
+
+
+# ---- Канал ----
+def boost_link(d):
+    """Ссылка на экран буста канала. Для публичных — по username, для приватных — по id."""
+    username = (getattr(d, "channel_username", "") or "").lstrip("@")
+    if username:
+        return f"https://t.me/boost/{username}"
+    cid = str(getattr(d, "channel_id", "") or "")
+    if cid.startswith("-100"):
+        cid = cid[4:]
+    elif cid.startswith("-"):
+        return ""
+    return f"https://t.me/boost/?channel={cid}" if cid else ""
 
 
 # ---- Текст ----

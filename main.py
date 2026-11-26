@@ -1,9 +1,11 @@
 import json
+import logging
 import re
-import traceback
+import signal
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
+import telebot
 from telebot.apihelper import ApiTelegramException
 
 import config
@@ -13,8 +15,10 @@ import models
 from app import bot, db, fsm
 from models import utcnow
 from tool import (BACK_LABELS, MENU_ACTIONS, MENU_LABELS, NOW_LABELS, SKIP_LABELS, T, bot_username,
-                  ensure_user, esc, fmt_dt, get_user, html_text, ikb, is_users_admin, parse_local_time,
-                  plain_len, short, tz_name, user_tz)
+                  ensure_user, esc, fmt_dt, get_user, html_text, ikb, is_users_admin, lang_of,
+                  parse_local_time, plain_len, short, tz_name, user_tz)
+
+log = logging.getLogger("bot.main")
 
 
 # ======================= ВАЛИДАТОРЫ ПОЛЕЙ =======================
@@ -506,8 +510,88 @@ def m_invite(m):
                      reply_markup=ikb([[(t["invite_share"], share)]]))
 
 
+def m_help(m):
+    uid = m.chat.id
+    bot.send_message(uid, T(uid)["menu"]["help_text"], reply_markup=keyboard.main_menu(uid),
+                     disable_web_page_preview=True)
+
+
+def m_tickets(m):
+    """Билеты и шансы пользователя по розыгрышам, в которых он участвует."""
+    uid = m.chat.id
+    t = T(uid)["menu"]
+    players = db.select_all(models.Player, user_id=str(uid))
+    refs = middleware.ref_counts()
+    lines, links = [t["tickets_title"]], []
+    for p in sorted(players, key=lambda p: p.id, reverse=True)[:10]:
+        d = db.get_one(models.Draw, id=p.draw_id)
+        if not d or d.status not in ("active", "finished"):
+            continue
+        tickets = middleware.tickets_for(d, p, refs.get(str(uid), 0), p.boost_count)
+        total = middleware.total_tickets(d, refs=refs)
+        chance = (tickets * 100.0 / total) if total else 0.0
+        lines.append(t["ticket_line"].format(
+            id=d.id, channel=esc(short(d.channel_name or "", 24)), tickets=tickets,
+            chance=f"{chance:.1f}", status=T(uid)["status"][d.status]))
+        links.append((d.id, middleware.post_link(d)))
+    if len(lines) == 1:
+        return bot.send_message(uid, t["no_tickets"], reply_markup=keyboard.main_menu(uid))
+    bot.send_message(uid, "\n".join(lines), reply_markup=keyboard.tickets_kb(uid, links),
+                     disable_web_page_preview=True)
+
+
+def mydata_text(uid):
+    t = T(uid)["menu"]
+    user = get_user(uid)
+    return t["my_data_text"].format(
+        id=uid,
+        username=f"@{user.username}" if user and user.username else "—",
+        lang=(user.language if user else "—"),
+        refs=middleware.referral_count(uid),
+        invited=db.count(models.User, referred_by=str(uid)),
+        draws=len(db.select_all(models.Player, user_id=str(uid))),
+    )
+
+
+def m_mydata(m):
+    uid = m.chat.id
+    bot.send_message(uid, mydata_text(uid), reply_markup=keyboard.mydata_kb(uid),
+                     disable_web_page_preview=True)
+
+
+def handle_my_data(call, p):
+    """Удаление данных пользователя: подтверждение и удаление."""
+    uid = call.from_user.id
+    action = p[1] if len(p) > 1 else ""
+    t = T(uid)
+    if action == "ask":
+        answer(call)
+        return bot.send_message(uid, t["menu"]["delete_confirm"],
+                                reply_markup=keyboard.mydata_confirm_kb(uid))
+    if action == "yes":
+        middleware.delete_user_data(uid)
+        fsm.remove_state(uid)
+        answer(call, t["menu"]["deleted"], True)
+        return send_menu(uid)
+    return answer(call)
+
+
 MENU_HANDLERS = {"create": m_create, "my": m_my, "channels": m_channels,
-                 "lang": m_lang, "support": m_support, "invite": m_invite, "users": m_users}
+                 "lang": m_lang, "support": m_support, "invite": m_invite,
+                 "tickets": m_tickets, "help": m_help, "users": m_users}
+
+
+# ======================= КОМАНДЫ =======================
+@bot.message_handler(commands=["help"], func=lambda m: m.chat.type == "private")
+def cmd_help(message):
+    ensure_user(message.from_user)
+    m_help(message)
+
+
+@bot.message_handler(commands=["mydata", "delete_me"], func=lambda m: m.chat.type == "private")
+def cmd_mydata(message):
+    ensure_user(message.from_user)
+    m_mydata(message)
 
 
 # ======================= АВТООБНАРУЖЕНИЕ КАНАЛОВ =======================
@@ -527,7 +611,7 @@ def on_my_chat_member(update):
         if status in ("administrator", "creator") and user and not user.is_bot:
             notify_channel_added(chat, user.id)
     except Exception:
-        traceback.print_exc()
+        log.exception("on_my_chat_member")
 
 
 @bot.channel_post_handler(func=lambda m: True)
@@ -535,7 +619,7 @@ def on_channel_post(m):
     try:
         middleware.remember_chat(m.chat, None, can_post=True)
     except Exception:
-        traceback.print_exc()
+        log.exception("on_channel_post")
 
 
 # ======================= ШАГИ (FSM) =======================
@@ -579,7 +663,7 @@ def _create_draw(uid, data):
             vals[k] = datetime.fromisoformat(v)
     if vals.get("finish_mode") == "count":
         vals.pop("end_at", None)
-    d = db.new(models.Draw, owner_id=str(uid), status="draft",
+    d = db.new(models.Draw, owner_id=str(uid), status="draft", language=lang_of(uid),
                button_text=T(uid)["post"]["join_default"], **vals)
     fsm.remove_state(uid)
     bot.send_message(uid, T(uid)["common"]["ok"], reply_markup=keyboard.main_menu(uid))
@@ -688,11 +772,12 @@ def cmd_backup(message):
     if not _is_admin(message.from_user):
         return
     try:
+        db.save()  # схлопываем журнал, чтобы копия была актуальной
         with open(db.path, "rb") as f:
             bot.send_document(message.chat.id, f, visible_file_name="bot_data.json",
                               caption="💾 Резервная копия данных")
     except Exception:
-        traceback.print_exc()
+        log.exception("backup")
 
 
 def _restore_command(m):
@@ -709,9 +794,10 @@ def cmd_restore(message):
         info = bot.get_file(message.document.file_id)
         raw = json.loads(bot.download_file(info.file_path).decode("utf-8"))
         db.replace_all(raw)
+        middleware.invalidate_ref_counts()
         bot.send_message(message.chat.id, "✅ Данные восстановлены из резервной копии.")
     except Exception as e:
-        traceback.print_exc()
+        log.exception("restore")
         bot.send_message(message.chat.id,
                          f"⚠️ Не удалось восстановить данные: {esc(short(str(e), 200))}")
 
@@ -742,11 +828,34 @@ def router(m):
             return send_menu(uid)
         handler(m, T(uid), data, state)
     except Exception:
-        traceback.print_exc()
+        log.exception("router")
         try:
             bot.send_message(m.chat.id, T(m.chat.id)["common"]["error"])
         except Exception:
             pass
+
+
+UNSUPPORTED_TYPES = ["voice", "audio", "sticker", "video_note", "location",
+                     "contact", "poll", "venue", "dice", "game"]
+
+
+@bot.message_handler(content_types=UNSUPPORTED_TYPES,
+                     func=lambda m: m.chat.type == "private")
+def h_unsupported(m):
+    """Голосовые, стикеры и прочее: без этого бот молча «зависает» на шаге."""
+    uid = m.chat.id
+    try:
+        ensure_user(m.from_user)
+        state, _ = fsm.get_state(uid)
+        if state in FIELD_OF:
+            markup = kb_for(uid, FIELD_OF[state])
+        elif state in ("c_chat", "c_mode", "e_input", "s_add"):
+            markup = keyboard.back_kb(uid)
+        else:
+            markup = keyboard.main_menu(uid)
+        bot.send_message(uid, T(uid)["common"]["unsupported"], reply_markup=markup)
+    except Exception:
+        log.exception("unsupported_message")
 
 
 # ======================= CALLBACK-КНОПКИ =======================
@@ -777,6 +886,9 @@ def do_publish(uid, d, call):
             return answer(call, t["draw"]["over_time"], True)
     if mode in ("count", "both") and not d.max_players:
         return answer(call, t["draw"]["need_target"], True)
+    if mode in ("count", "both") and d.winners_count > d.max_players:
+        return answer(call, t["draw"]["winners_over_target"].format(
+            winners=d.winners_count, target=d.max_players), True)
     if not db.update(models.Draw, {"status": "scheduled", "start_at": start}, id=d.id, status="draft"):
         return answer(call, t["draw"]["not_editable"], True)
     answer(call)
@@ -786,6 +898,8 @@ def do_publish(uid, d, call):
     ok, res = middleware.publish_draw(d.id)
     if ok:
         text = t["draw"]["published"] + (f"\n{res}" if res else "")
+        if not d.channel_username:
+            text += "\n\n" + t["draw"]["private_channel_note"]
         bot.send_message(uid, text, reply_markup=keyboard.main_menu(uid), disable_web_page_preview=True)
 
 
@@ -893,7 +1007,7 @@ def on_callback(call):
     try:
         route_callback(call)
     except Exception:
-        traceback.print_exc()
+        log.exception("callback")
         answer(call)
 
 
@@ -917,6 +1031,8 @@ def route_callback(call):
         return answer(call, text or None, alert)
     if cmd == "boost":
         return handle_boost(call)
+    if cmd == "mydel":
+        return handle_my_data(call, p)
     if cmd == "res":
         try:
             draw_id = int(p[1])
@@ -1082,9 +1198,40 @@ def route_callback(call):
     answer(call)
 
 
+def _shutdown(signum, _frame):
+    log.info("остановка по сигналу %s", signum)
+    middleware.stop_worker()
+    try:
+        bot.stop_polling()
+    except Exception:
+        log.debug("stop_polling", exc_info=True)
+    db.save()
+
+
+def _setup_commands():
+    try:
+        bot.set_my_commands([
+            telebot.types.BotCommand("start", "Меню"),
+            telebot.types.BotCommand("help", "Как пользоваться ботом"),
+            telebot.types.BotCommand("mydata", "Мои данные и удаление"),
+            telebot.types.BotCommand("cancel", "Отменить текущий шаг"),
+        ])
+    except Exception:
+        log.debug("не удалось установить список команд", exc_info=True)
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+    _setup_commands()
     middleware.start_worker()
-    print("Bot started")
-    bot.infinity_polling(allowed_updates=[
-        "message", "callback_query", "my_chat_member", "channel_post",
-    ])
+    log.info("бот запущен")
+    try:
+        # skip_pending: после простоя не переигрываем старые нажатия кнопок
+        bot.infinity_polling(allowed_updates=[
+            "message", "callback_query", "my_chat_member", "channel_post",
+        ], skip_pending=True)
+    finally:
+        middleware.stop_worker()
+        db.save()
+        log.info("бот остановлен")
