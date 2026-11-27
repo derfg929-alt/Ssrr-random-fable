@@ -16,11 +16,15 @@ import zlib
 TTL = 180            # сколько секунд живёт капча
 MAX_TRIES = 3        # сколько раз можно ошибиться
 PENDING_TTL = 900    # сколько помним попытку участия, если бот не смог написать первым
+MAX_ITEMS = 2000     # сколько капч максимум держим в памяти
+MAX_ISSUE = 10       # сколько капч можно запросить за окно
+ISSUE_WINDOW = 600   # окно лимита выдачи, сек
 
 _rng = random.SystemRandom()
 _lock = threading.Lock()
 _items = {}          # user_id -> капча
 _pending = {}        # user_id -> (draw_id, expires)
+_issued = {}         # user_id -> [время выдачи, ...]
 
 COLORS = {
     "red": (226, 58, 58),
@@ -239,12 +243,53 @@ def make(draw_id):
     }
 
 
+def _sweep_locked(now=None):
+    """Убирает просроченные капчи и попытки. Без этого память росла бы вечно:
+    записи удалялись только при повторном обращении того же пользователя."""
+    now = now or time.time()
+    for key, item in list(_items.items()):
+        if item.get("expires", 0) < now:
+            _items.pop(key, None)
+    if len(_items) > MAX_ITEMS:
+        stale = sorted(_items.items(), key=lambda kv: kv[1].get("expires", 0))
+        for key, _ in stale[:len(_items) - MAX_ITEMS]:
+            _items.pop(key, None)
+    for key, (_, expires) in list(_pending.items()):
+        if expires < now:
+            _pending.pop(key, None)
+    for key, stamps in list(_issued.items()):
+        fresh = [stamp for stamp in stamps if stamp > now - ISSUE_WINDOW]
+        if fresh:
+            _issued[key] = fresh
+        else:
+            _issued.pop(key, None)
+
+
+def sweep():
+    with _lock:
+        _sweep_locked()
+
+
+def allow(user_id):
+    """Лимит на выдачу капч: перебор вариантов новыми капчами не помогает."""
+    key = str(user_id)
+    now = time.time()
+    with _lock:
+        _sweep_locked(now)
+        stamps = _issued.setdefault(key, [])
+        if len(stamps) >= MAX_ISSUE:
+            return False
+        stamps.append(now)
+        return True
+
+
 def save(user_id, item, chat_id, message_id):
     item["chat_id"] = chat_id
     item["message_id"] = message_id
     item["expires"] = time.time() + TTL
     with _lock:
         _items[str(user_id)] = item
+        _sweep_locked()
 
 
 def get(user_id):
@@ -264,6 +309,7 @@ def drop(user_id):
 
 def set_pending(user_id, draw_id):
     with _lock:
+        _sweep_locked()
         _pending[str(user_id)] = (int(draw_id), time.time() + PENDING_TTL)
 
 
@@ -274,3 +320,12 @@ def pop_pending(user_id):
         return None
     draw_id, expires = value
     return draw_id if expires > time.time() else None
+
+
+def forget(user_id):
+    """Удаляет всё, что связано с пользователем (запрос на удаление данных)."""
+    key = str(user_id)
+    with _lock:
+        _items.pop(key, None)
+        _pending.pop(key, None)
+        _issued.pop(key, None)

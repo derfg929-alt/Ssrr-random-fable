@@ -1,12 +1,14 @@
 import csv
 import io
 import json
+import logging
+import queue
 import random
 import re
 import threading
 import time
-import traceback
 from datetime import datetime
+from urllib.parse import quote
 
 import telebot
 from telebot.apihelper import ApiTelegramException
@@ -18,13 +20,17 @@ import models
 from app import bot, db
 from base import IntegrityError
 from models import utcnow
-from tool import T, bot_username, esc, fmt_dt, ikb, short, tz_name, user_tz
+from tool import (T, TD, boost_link, bot_username, esc, fmt_dt, ikb, short, tz_name,
+                  user_tz)
+
+log = logging.getLogger("bot.middleware")
 
 OK_STATUSES = ("member", "administrator", "creator")
 FINISH_MODES = ("time", "count", "both")
 _bot_id = None
 _last_edit = {}          # draw_id -> время последнего обновления счётчика
 _synced = set()          # draw_id, у которых кнопка уже переведена на URL-вид
+_ref_cache = None        # user_id -> число приглашённых (см. ref_counts)
 _rng = random.SystemRandom()
 
 
@@ -33,29 +39,12 @@ def _mode(d):
     return mode if mode in FINISH_MODES else "both"
 
 
-def effective_finish_mode(d):
+def finish_mode(d):
     """both без цели фактически работает как time (совместимость со старыми розыгрышами)."""
     mode = _mode(d)
     if mode == "both" and not getattr(d, "max_players", 0):
         return "time"
     return mode
-
-
-def finish_mode(d):
-    return effective_finish_mode(d)
-
-
-def boost_link(d):
-    """Ссылка на экран буста канала. Для публичных — по username, для приватных — по id."""
-    username = (getattr(d, "channel_username", "") or "").lstrip("@")
-    if username:
-        return f"https://t.me/boost/{username}"
-    cid = str(getattr(d, "channel_id", "") or "")
-    if cid.startswith("-100"):
-        cid = cid[4:]
-    elif cid.startswith("-"):
-        return ""
-    return f"https://t.me/boost/?channel={cid}" if cid else ""
 
 
 def invite_link(user_id):
@@ -79,13 +68,58 @@ def refresh_boost_count(d, user_id):
 
 
 def ref_counts():
-    """user_id пригласившего -> сколько пользователей он пригласил."""
-    counts = {}
-    for user in db.select_all(models.User):
-        inviter = str(getattr(user, "referred_by", "") or "")
-        if inviter:
-            counts[inviter] = counts.get(inviter, 0) + 1
-    return counts
+    """user_id пригласившего -> сколько пользователей он пригласил.
+
+    Кэш: раньше здесь был полный скан всех пользователей на каждый вход в
+    розыгрыш (сотни миллисекунд на большой базе).
+    """
+    global _ref_cache
+    if _ref_cache is None:
+        counts = {}
+        for user in db.select_all(models.User):
+            inviter = str(getattr(user, "referred_by", "") or "")
+            if inviter:
+                counts[inviter] = counts.get(inviter, 0) + 1
+        _ref_cache = counts
+    return _ref_cache
+
+
+def invalidate_ref_counts():
+    global _ref_cache
+    _ref_cache = None
+
+
+# ---- Фоновые задачи ----
+_tasks = queue.Queue()
+_bg_thread = None
+_worker_thread = None
+_stop = threading.Event()
+
+
+def run_in_background(fn, *args):
+    """Тяжёлая работа не должна занимать поток обработчика.
+
+    До start_worker (например, в тестах) задача выполняется синхронно.
+    """
+    if _bg_thread is None or not _bg_thread.is_alive():
+        return fn(*args)
+    _tasks.put((fn, args))
+    return None
+
+
+def _bg_loop():
+    while True:
+        item = _tasks.get()
+        try:
+            if item is None:
+                return
+            fn, args = item
+            try:
+                fn(*args)
+            except Exception:
+                log.exception("фоновая задача %s", getattr(fn, "__name__", fn))
+        finally:
+            _tasks.task_done()
 
 
 def tickets_for(d, player, refs=0, boost=None):
@@ -150,6 +184,10 @@ def send_ticket_info(user, d):
             rows.append([(t["boost_button"].format(n=getattr(d, "boost_tickets", 0) or config.BOOST_TICKETS_DEFAULT),
                           boost, "primary")])
         rows.append([(t["boost_check"], f"boost:{d.id}")])
+    post = post_link(d)
+    if post:
+        rows.append([(t["share_button"], "https://t.me/share/url?url=" + quote(post, safe="")
+                      + "&text=" + quote(t["share_text"], safe=""))])
     try:
         bot.send_message(user.id, text, reply_markup=ikb(rows) if rows else None,
                          disable_web_page_preview=True)
@@ -337,7 +375,7 @@ def draw_summary(uid, d):
     s = t["draw"]["summary"]
     tz = user_tz(uid)
     subs = db.select_all(models.DrawChannel, draw_id=d.id)
-    mode = effective_finish_mode(d)
+    mode = finish_mode(d)
     display_mode = mode
     if display_mode == "count":
         end_text = s["by_count"].format(n=d.max_players)
@@ -365,7 +403,12 @@ def draw_summary(uid, d):
         f"<b>{s['subs']}:</b> " + (", ".join(esc(c.title or "") for c in subs) or t["common"]["none"]),
     ]
     if d.status in ("active", "finished"):
-        lines.append(f"<b>{s['players']}:</b> {db.count(models.Player, draw_id=d.id)}")
+        players = db.select_all(models.Player, draw_id=d.id)
+        lines.append(f"<b>{s['players']}:</b> {len(players)}")
+        lines.append(f"<b>{s['tickets']}:</b> {total_tickets(d, players=players)}")
+        boosts = sum(p.boost_count or 0 for p in players)
+        if d.boost_enabled and boosts:
+            lines.append(f"<b>{s['boosts']}:</b> {boosts}")
     if d.status == "finished" and (d.rerolls or 0):
         lines.append(f"<b>{s['rerolls']}:</b> {d.rerolls}")
     return "\n".join(lines)
@@ -455,11 +498,17 @@ def join_draw_by_id(user, draw_id):
 
     name = " ".join(x for x in (user.first_name, user.last_name) if x) or user.username or str(user.id)
     boost_count = _fetch_boost_count(d, user.id)
+
+    def has_room():
+        return not (d.max_players and db.count(models.Player, draw_id=d.id) >= d.max_players)
+
     try:
-        db.new(models.Player, draw_id=d.id, user_id=str(user.id), name=short(name, 64),
-               username=user.username, boost_count=boost_count)
+        player = db.new(models.Player, _guard=has_room, draw_id=d.id, user_id=str(user.id),
+                        name=short(name, 64), username=user.username, boost_count=boost_count)
     except IntegrityError:
         return t["already"], False
+    if player is None:
+        return t["full"], True
 
     # count/both завершит воркер на ближайшем тике, когда увидит достигнутую цель
     send_ticket_info(user, d)
@@ -487,6 +536,8 @@ def begin_join(user, draw_id):
     existing = captcha.get(user.id)
     if existing and existing.get("draw_id") == d.id:
         return _send_captcha(user, d, existing)
+    if not captcha.allow(user.id):
+        return T(user.id, user.language_code)["captcha"]["too_many_attempts"], True
     return _send_captcha(user, d)
 
 
@@ -627,7 +678,7 @@ def results_text(d, uid):
     t = T(uid)["post"]
     tz = user_tz(uid)
     winners = load_winners(d)
-    log = load_reroll_log(d)
+    history = load_reroll_log(d)
     lines = [t["results_title"].format(id=d.id), "", t["current_winners"]]
     if winners:
         lines.extend(winner_line(i, w) for i, w in enumerate(winners, 1))
@@ -635,10 +686,10 @@ def results_text(d, uid):
         lines.append(t["no_winners"])
 
     lines.append("")
-    if log:
+    if history:
         lines.append(t["rerolled_winners"])
-        total_rounds = len(log)
-        for shown, entry in enumerate(reversed(log), 1):
+        total_rounds = len(history)
+        for shown, entry in enumerate(reversed(history), 1):
             if not isinstance(entry, dict):
                 continue
             round_no = total_rounds - shown + 1
@@ -660,7 +711,7 @@ def results_text(d, uid):
 
     lines.append("")
     lines.append(t["players_count"].format(n=db.count(models.Player, draw_id=d.id)))
-    if log and (d.rerolls or 0) > len(log):
+    if history and (d.rerolls or 0) > len(history):
         lines.append(t["reroll_history_missing"].format(n=d.rerolls))
     return "\n".join(lines)
 
@@ -761,18 +812,21 @@ def pick_winners(draw_id, count, exclude_ids=None):
     return len(players), winners, fallback
 
 
-def announce(d, winners, reroll):
-    """Публикует список победителей ответом на пост. True, если получилось."""
-    t = T(d.owner_id)["post"]
+def announce(d, winners, reroll, n_players=0):
+    """Публикует список победителей ответом на пост. (успех, id последнего сообщения)."""
+    t = TD(d)["post"]
     if winners:
         parts = _winner_chunks(winners)
         parts[0] = t["reroll_title" if reroll else "winners_title"] + "\n" + parts[0]
     else:
         parts = [t["no_winners"]]
+    if n_players:
+        parts[-1] += "\n\n" + t["players_count"].format(n=n_players)
     username = bot_username()
     if username:
         parts[-1] += "\n\n" + t["more_giveaways"].format(bot=f"@{username}")
     markup = keyboard.results_kb(d.owner_id, d.id, back=False, bot=True, button=True)
+    last_id = None
     for idx, part in enumerate(parts):
         kw = {}
         if d.message_id:
@@ -780,18 +834,19 @@ def announce(d, winners, reroll):
         if idx == len(parts) - 1 and markup is not None:
             kw["reply_markup"] = markup
         try:
-            bot.send_message(d.channel_id, part, **kw)
+            msg = bot.send_message(d.channel_id, part, **kw)
         except Exception:
             kw.pop("reply_to_message_id", None)
             try:
-                bot.send_message(d.channel_id, part, **kw)
+                msg = bot.send_message(d.channel_id, part, **kw)
             except Exception:
-                return False
-    return True
+                return False, None
+        last_id = getattr(msg, "message_id", last_id)
+    return True, last_id
 
 
 def close_post_button(d, n_players):
-    t = T(d.owner_id)["post"]
+    t = TD(d)["post"]
     rows = [[(t["finished_button"].format(n=n_players), "done")],
             [(t["results_button"], f"res:{d.id}")]]
     username = bot_username()
@@ -822,9 +877,9 @@ def finish_draw(draw_id, reroll=False, exclude_previous=False):
     rerolls = (d.rerolls or 0) + (1 if reroll else 0)
     values = {"winners": json.dumps(winners, ensure_ascii=False), "rerolls": rerolls}
     if reroll and previous:
-        log = load_reroll_log(d)
-        log.append({"at": utcnow().isoformat(), "winners": previous})
-        values["reroll_log"] = json.dumps(log[-config.MAX_REROLL_LOG:], ensure_ascii=False)
+        history = load_reroll_log(d)
+        history.append({"at": utcnow().isoformat(), "winners": previous})
+        values["reroll_log"] = json.dumps(history[-config.MAX_REROLL_LOG:], ensure_ascii=False)
     if not d.finished_at:
         values["finished_at"] = utcnow()
     db.update(models.Draw, values, id=d.id)
@@ -832,7 +887,12 @@ def finish_draw(draw_id, reroll=False, exclude_previous=False):
     if not reroll:
         close_post_button(d, n_players)
 
-    posted = announce(d, winners, reroll)
+    posted, last_id = announce(d, winners, reroll, n_players)
+    if posted and config.PIN_RESULTS and last_id:
+        try:
+            bot.pin_chat_message(d.channel_id, last_id, disable_notification=True)
+        except Exception:
+            log.debug("не удалось закрепить итоги #%s", d.id, exc_info=True)
     link = post_link(d)
     t = T(d.owner_id)["post"]
 
@@ -850,7 +910,18 @@ def finish_draw(draw_id, reroll=False, exclude_previous=False):
         except Exception:
             break
 
-    # личное сообщение победителям (получат только те, кто запускал бота)
+    # личные сообщения победителям — в фоне, чтобы не держать поток обработчика
+    run_in_background(_notify_winners, d.id, winners, link)
+    _synced.discard(d.id)
+    _last_edit.pop(d.id, None)
+    return True
+
+
+def _notify_winners(draw_id, winners, link):
+    """Личное сообщение победителям (получат только те, кто запускал бота)."""
+    d = db.get_one(models.Draw, id=draw_id)
+    if not d:
+        return
     username = bot_username()
     for w in winners:
         try:
@@ -863,9 +934,8 @@ def finish_draw(draw_id, reroll=False, exclude_previous=False):
             bot.send_message(w["id"], text, disable_web_page_preview=True,
                              reply_markup=keyboard.bot_kb(w["id"]))
         except Exception:
-            pass
+            log.debug("не удалось написать победителю %s", w.get("id"), exc_info=True)
         time.sleep(0.05)
-    return True
 
 
 def cancel_draw(draw_id):
@@ -876,7 +946,7 @@ def cancel_draw(draw_id):
     old = d.status
     if not db.update(models.Draw, {"status": "cancelled"}, id=draw_id, status=old):
         return False
-    t = T(d.owner_id)["post"]
+    t = TD(d)["post"]
     if old == "active" and d.message_id:
         n = db.count(models.Player, draw_id=d.id)
         rows = [[(t["cancelled_button"].format(n=n), "done")]]
@@ -910,6 +980,8 @@ def register_referral(invited_id, inviter_id):
     if not invited or invited.referred_by:
         return
     db.update(models.User, {"referred_by": inviter_id}, user_id=invited_id)
+    if _ref_cache is not None:
+        _ref_cache[inviter_id] = _ref_cache.get(inviter_id, 0) + 1
     total = referral_count(inviter_id)
     try:
         bot.send_message(inviter_id, T(inviter_id)["menu"]["invited_notice"].format(invited=total),
@@ -971,11 +1043,12 @@ def refresh_counter(d):
 
 def tick():
     now = utcnow()
+    captcha.sweep()
     for d in db.select_all(models.Draw, status="scheduled"):
         if d.start_at is None or d.start_at <= now:
             _safe(publish_draw, d.id)
     for d in db.select_all(models.Draw, status="active"):
-        mode = effective_finish_mode(d)
+        mode = finish_mode(d)
         players = db.count(models.Player, draw_id=d.id)
         reached = mode in ("count", "both") and d.max_players and players >= d.max_players
         timed = mode in ("time", "both") and d.end_at and d.end_at <= now
@@ -983,20 +1056,74 @@ def tick():
             _safe(finish_draw, d.id)
         else:
             _safe(refresh_counter, d)
+            _safe(remind_owner, d)
+
+
+def remind_owner(d):
+    """Напоминание владельцу за 24 часа и за час до конца розыгрыша."""
+    if not config.REMINDERS_ENABLED or not d.end_at:
+        return
+    left = (d.end_at - utcnow()).total_seconds()
+    if left <= 0:
+        return
+    if left <= 3600:
+        flag, key = "reminded_1h", "reminder_1h"
+    elif left <= 86400:
+        flag, key = "reminded_24h", "reminder_24h"
+    else:
+        return
+    if getattr(d, flag):
+        return
+    db.update(models.Draw, {flag: 1}, id=d.id)
+    t = T(d.owner_id)["post"]
+    tz = user_tz(d.owner_id)
+    text = t[key].format(id=d.id, channel=esc(d.channel_name or ""),
+                         players=db.count(models.Player, draw_id=d.id),
+                         end=fmt_dt(d.end_at, tz), tz=tz_name(tz, d.owner_id))
+    try:
+        bot.send_message(d.owner_id, text, disable_web_page_preview=True)
+    except Exception:
+        log.debug("не удалось отправить напоминание по #%s", d.id, exc_info=True)
 
 
 def _safe(fn, *args):
     try:
         return fn(*args)
     except Exception:
-        traceback.print_exc()
+        log.exception("ошибка в %s", getattr(fn, "__name__", fn))
 
 
 def worker_loop():
-    while True:
+    while not _stop.is_set():
         _safe(tick)
-        time.sleep(config.WORKER_TICK)
+        _stop.wait(config.WORKER_TICK)
 
 
 def start_worker():
-    threading.Thread(target=worker_loop, daemon=True, name="draw-worker").start()
+    global _bg_thread, _worker_thread
+    if _worker_thread is None or not _worker_thread.is_alive():
+        _stop.clear()
+        _worker_thread = threading.Thread(target=worker_loop, daemon=True, name="draw-worker")
+        _worker_thread.start()
+    if _bg_thread is None or not _bg_thread.is_alive():
+        _bg_thread = threading.Thread(target=_bg_loop, daemon=True, name="draw-bg")
+        _bg_thread.start()
+
+
+def stop_worker():
+    _stop.set()
+    if _bg_thread is not None and _bg_thread.is_alive():
+        _tasks.put(None)
+
+
+def delete_user_data(user_id):
+    """Удаляет данные пользователя по его запросу (/mydata)."""
+    uid = str(user_id)
+    removed = db.delete(models.Player, user_id=uid)
+    db.delete(models.UserState, user_id=uid)
+    for user in db.select_all(models.User, referred_by=uid):
+        db.update(models.User, {"referred_by": ""}, user_id=user.user_id)
+    db.delete(models.User, user_id=uid)
+    captcha.forget(uid)
+    invalidate_ref_counts()
+    return removed

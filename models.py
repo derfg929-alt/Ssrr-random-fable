@@ -88,6 +88,7 @@ class Draw(Model):
     winners_count = Field(1)
     max_players = Field(0)                      # 0 = без лимита; для count/both — цель
     button_text = Field()                       # None = текст по умолчанию
+    language = Field("")                        # язык поста в канале ("" = язык владельца)
     start_at = Field()                          # None = сразу при публикации
     end_at = Field()                            # None = без срока (режим count)
     finish_mode = Field("time")                 # time | count | both
@@ -100,6 +101,8 @@ class Draw(Model):
     winners = Field("[]")                       # JSON [{"id":..., "name":..., "username":...}]
     rerolls = Field(0)                          # сколько раз переигрывали итоги
     reroll_log = Field("[]")                    # JSON [{"at":..., "winners":[...]}, ...]
+    reminded_24h = Field(0)                     # напоминание владельцу отправлено
+    reminded_1h = Field(0)
     finished_at = Field()
     created_at = Field(utcnow)
 

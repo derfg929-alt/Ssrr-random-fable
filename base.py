@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -6,6 +7,8 @@ from datetime import datetime
 
 import config
 import models
+
+log = logging.getLogger("bot.storage")
 
 
 class IntegrityError(Exception):
@@ -35,42 +38,154 @@ def _sort_key(value):
 
 
 class DataBase:
-    """Простое хранилище на JSON-файле с тем же API, что был у SQLAlchemy-версии.
+    """Хранилище на JSON-снимке и журнале операций.
 
-    Все данные лежат в одном файле (config.db_path) и сохраняются после каждой
-    операции записи. Файл пишется атомарно, поэтому перезапуск/обновление бота
-    не теряет пользователей, розыгрыши, участников и состояния.
+    Снимок (config.db_path) перезаписывается целиком только при компакции, а
+    каждая мутация дописывается строкой в журнал (<path>.journal). Поэтому
+    запись стоит O(1) и не блокирует бота на больших объёмах, а при падении
+    процесса данные не теряются: журнал проигрывается при старте.
     """
 
     def __init__(self, path=None):
         self.path = path or config.db_path
+        self.journal = self.path + ".journal"
         self._lock = threading.RLock()
         self._data = {m.__tablename__: [] for m in models.ALL_MODELS}
+        self._seq = {m.__tablename__: 0 for m in models.ALL_MODELS}
+        self._pk = {m.__tablename__: m.__pk__ for m in models.ALL_MODELS}
+        self._journal_ops = 0
         fresh = not os.path.exists(self.path)
         self._load()
         if fresh and self._migrate_legacy_sqlite():
-            self._save()
+            self._compact()
 
     # ---- файл ----
     def _load(self):
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        if not os.path.exists(self.path):
-            return
-        try:
-            with open(self.path, encoding="utf-8") as f:
-                raw = json.load(f)
-        except Exception:
-            backup = f"{self.path}.corrupt-{datetime.now():%Y%m%d-%H%M%S}"
+        raw = {}
+        if os.path.exists(self.path):
             try:
-                os.replace(self.path, backup)
-                print(f"[storage] повреждённый JSON сохранён как {backup}")
+                with open(self.path, encoding="utf-8") as f:
+                    raw = json.load(f)
             except Exception:
-                pass
-            return
+                backup = f"{self.path}.corrupt-{datetime.now():%Y%m%d-%H%M%S}"
+                try:
+                    os.replace(self.path, backup)
+                    log.error("повреждённый JSON сохранён как %s", backup)
+                except Exception:
+                    log.exception("не удалось сохранить повреждённый JSON")
+                raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
         for model in models.ALL_MODELS:
             rows = raw.get(model.__tablename__)
             if isinstance(rows, list):
                 self._data[model.__tablename__] = rows
+        seq = raw.get("__seq__")
+        if isinstance(seq, dict):
+            for table, value in seq.items():
+                if table in self._seq and isinstance(value, int):
+                    self._seq[table] = value
+        self._sync_seq()
+        self._journal_ops = self._replay()
+        self._sync_seq()
+
+    def _sync_seq(self):
+        """Счётчик id не отстаёт от данных и не переиспользует id удалённых строк."""
+        for model in models.ALL_MODELS:
+            if not model.__auto__:
+                continue
+            table = self._data[model.__tablename__]
+            current = max((row.get(model.__auto__) or 0 for row in table), default=0)
+            self._seq[model.__tablename__] = max(self._seq.get(model.__tablename__, 0), current)
+
+    def _replay(self):
+        if not os.path.exists(self.journal):
+            return 0
+        applied = 0
+        try:
+            with open(self.journal, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        op = json.loads(line)
+                    except ValueError:
+                        continue  # обрыв записи при падении процесса
+                    if self._apply(op):
+                        applied += 1
+        except OSError:
+            log.exception("не удалось прочитать журнал %s", self.journal)
+            return applied
+        if applied:
+            log.info("применено %d операций из журнала", applied)
+        return applied
+
+    def _apply(self, op):
+        kind = op.get("o")
+        table = op.get("t")
+        if table not in self._data:
+            return False
+        if kind == "n":
+            row = op.get("r") or {}
+            pk = self._pk.get(table) or ()
+            # Компакция и обрезка журнала не атомарны: повтор уже применённой
+            # вставки отсекаем по первичному ключу.
+            if pk and any(all(r.get(k) == row.get(k) for k in pk) for r in self._data[table]):
+                return False
+            self._data[table].append(row)
+            return True
+        if kind == "u":
+            values = op.get("v") or {}
+            filters = op.get("f") or {}
+            for row in self._data[table]:
+                if _matches(row, filters):
+                    row.update(values)
+            return True
+        if kind == "d":
+            filters = op.get("f") or {}
+            self._data[table] = [r for r in self._data[table] if not _matches(r, filters)]
+            return True
+        return False
+
+    def _append(self, op):
+        try:
+            with open(self.journal, "a", encoding="utf-8") as f:
+                f.write(json.dumps(op, ensure_ascii=False) + "\n")
+                if config.DB_FSYNC:
+                    f.flush()
+                    os.fsync(f.fileno())
+        except OSError:
+            log.exception("не удалось записать журнал, сохраняю снимок целиком")
+            self._compact()
+            return
+        self._journal_ops += 1
+        if self._journal_ops >= config.JOURNAL_COMPACT_OPS:
+            self._compact()
+
+    def _compact(self):
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+        snapshot = dict(self._data)
+        snapshot["__seq__"] = dict(self._seq)
+        tmp = f"{self.path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=1)
+            if config.DB_FSYNC:
+                f.flush()
+                os.fsync(f.fileno())
+        os.replace(tmp, self.path)
+        try:
+            open(self.journal, "w", encoding="utf-8").close()
+        except OSError:
+            log.exception("не удалось очистить журнал %s", self.journal)
+        self._journal_ops = 0
+
+    def save(self):
+        """Схлопывает журнал в снимок. Вызывается при остановке и перед бэкапом."""
+        with self._lock:
+            self._compact()
 
     def _migrate_legacy_sqlite(self):
         """Однократно переносит данные старой SQLite-базы в JSON, если она найдена."""
@@ -104,20 +219,9 @@ class DataBase:
         finally:
             conn.close()
         if migrated:
-            print(f"[storage] перенесено {migrated} записей из {legacy} в {self.path}")
+            self._sync_seq()
+            log.info("перенесено %d записей из %s в %s", migrated, legacy, self.path)
         return migrated > 0
-
-    def _save(self):
-        directory = os.path.dirname(self.path) or "."
-        os.makedirs(directory, exist_ok=True)
-        tmp = f"{self.path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, self.path)
-
-    def save(self):
-        with self._lock:
-            self._save()
 
     # ---- конвертация ----
     @staticmethod
@@ -177,18 +281,24 @@ class DataBase:
         with self._lock:
             return sum(1 for row in self._data[Model.__tablename__] if _matches(row, filters))
 
-    def new(self, Model, **fields):
+    def new(self, Model, _guard=None, **fields):
+        """Создаёт строку. _guard вызывается под тем же локом до вставки,
+        поэтому лимиты (например, число участников) проверяются атомарно."""
         with self._lock:
+            if _guard is not None and not _guard():
+                return None
             table = self._data[Model.__tablename__]
             row = {name: _default(field) for name, field in _fields(Model).items()}
             row.update(fields)
             if Model.__auto__ and row.get(Model.__auto__) is None:
-                row[Model.__auto__] = max(
-                    (r.get(Model.__auto__) or 0 for r in table), default=0) + 1
+                self._seq[Model.__tablename__] = max(
+                    self._seq.get(Model.__tablename__, 0),
+                    max((r.get(Model.__auto__) or 0 for r in table), default=0)) + 1
+                row[Model.__auto__] = self._seq[Model.__tablename__]
             row = self._serialize(Model, row)
             self._check_unique(Model, row, table)
             table.append(row)
-            self._save()
+            self._append({"o": "n", "t": Model.__tablename__, "r": row})
             return self._to_obj(Model, row)
 
     def upsert(self, Model, **fields):
@@ -196,8 +306,10 @@ class DataBase:
             table = self._data[Model.__tablename__]
             for row in table:
                 if all(row.get(key) == fields.get(key) for key in Model.__pk__):
-                    row.update(self._serialize(Model, fields))
-                    self._save()
+                    values = self._serialize(Model, fields)
+                    row.update(values)
+                    self._append({"o": "u", "t": Model.__tablename__, "v": values,
+                                  "f": {key: row.get(key) for key in Model.__pk__}})
                     return self._to_obj(Model, row)
             return self.new(Model, **fields)
 
@@ -211,7 +323,7 @@ class DataBase:
                     row.update(values)
                     changed += 1
             if changed:
-                self._save()
+                self._append({"o": "u", "t": Model.__tablename__, "v": values, "f": filters})
             return changed
 
     def delete(self, Model, **filters):
@@ -221,7 +333,7 @@ class DataBase:
             removed = len(table) - len(keep)
             if removed:
                 self._data[Model.__tablename__] = keep
-                self._save()
+                self._append({"o": "d", "t": Model.__tablename__, "f": filters})
             return removed
 
     def replace_all(self, raw):
@@ -239,10 +351,12 @@ class DataBase:
             raise ValueError("backup has no known tables")
         with self._lock:
             self._data = new
-            self._save()
+            self._seq = {table: 0 for table in self._seq}
+            self._sync_seq()
+            self._compact()
 
     def base_init(self):
         with self._lock:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             if not os.path.exists(self.path):
-                self._save()
+                self._compact()

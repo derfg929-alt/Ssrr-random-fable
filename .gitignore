@@ -9,3 +9,5 @@ venv/
 .openhands/
 data/
 *.json.tmp
+*.json.journal
+.pytest_cache/

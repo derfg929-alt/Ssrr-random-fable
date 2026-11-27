@@ -3,7 +3,8 @@ from urllib.parse import quote
 import telebot
 
 import config
-from tool import T, bot_username, get_user, ikb, is_users_admin, short, fmt_dt, user_tz
+from tool import (T, TD, boost_link, bot_username, fmt_dt, get_user, ikb, is_users_admin,
+                  short, user_tz)
 
 PAGE_SIZE = 8
 
@@ -13,8 +14,9 @@ def main_menu(user_id):
     b = T(user_id)["menu"]["buttons"]
     kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(b["create"], b["my"])
-    kb.row(b["channels"], b["lang"])
-    kb.row(b["support"], b["invite"])
+    kb.row(b["channels"], b["tickets"])
+    kb.row(b["invite"], b["support"])
+    kb.row(b["lang"], b["help"])
     user = get_user(user_id)
     if is_users_admin(user_id, getattr(user, "username", None) if user else None):
         kb.row(b["users"])
@@ -97,20 +99,9 @@ def _pretty_join_label(label):
     return label or "🎉"
 
 
-def _boost_url(draw):
-    username = (getattr(draw, "channel_username", "") or "").lstrip("@")
-    if username:
-        return f"https://t.me/boost/{username}"
-    cid = str(getattr(draw, "channel_id", "") or "")
-    if cid.startswith("-100"):
-        cid = cid[4:]
-    elif cid.startswith("-"):
-        return ""
-    return f"https://t.me/boost/?channel={cid}" if cid else ""
-
-
 def join_kb(draw, count=0, preview=False, styled=True):
-    label = _pretty_join_label(draw.button_text or T(draw.owner_id)["post"]["join_default"])
+    t = TD(draw)["post"]
+    label = _pretty_join_label(draw.button_text or t["join_default"])
     if count:
         label = f"{label} · {count}"
     label = short(label, 64)
@@ -124,12 +115,12 @@ def join_kb(draw, count=0, preview=False, styled=True):
     row = (label, target) + ((style,) if style else ())
     rows = [[row]]
     if getattr(draw, "boost_enabled", 0):
-        boost_target = "noop" if preview else _boost_url(draw)
+        boost_target = "noop" if preview else boost_link(draw)
         if boost_target:
             n = getattr(draw, "boost_tickets", 0) or config.BOOST_TICKETS_DEFAULT
-            rows.append([(T(draw.owner_id)["post"]["boost_button"].format(n=n), boost_target, "primary")])
+            rows.append([(t["boost_button"].format(n=n), boost_target, "primary")])
     if not preview and username:
-        rows.append([(T(draw.owner_id)["post"]["bot_button"], f"https://t.me/{username}")])
+        rows.append([(t["bot_button"], f"https://t.me/{username}")])
     return ikb(rows)
 
 
@@ -236,6 +227,25 @@ def users_kb(page, pages):
     if page + 1 < pages:
         nav.append(("▶️", f"usr:{page + 1}"))
     return ikb([nav] if nav else [])
+
+
+# ---- Мои билеты ----
+def tickets_kb(user_id, links):
+    """links = [(draw_id, ссылка_на_пост), ...] — только кнопки перехода к посту."""
+    t = T(user_id)["menu"]
+    rows = [[(t["ticket_open"].format(id=draw_id), link)] for draw_id, link in links if link]
+    return ikb(rows) if rows else None
+
+
+# ---- Мои данные ----
+def mydata_kb(user_id):
+    t = T(user_id)["menu"]
+    return ikb([[(t["delete_data"], "mydel:ask")]])
+
+
+def mydata_confirm_kb(user_id):
+    c = T(user_id)["common"]
+    return ikb([[(c["yes"], "mydel:yes"), (c["no"], "noop")]])
 
 
 # ---- Мои розыгрыши ----
