@@ -40,13 +40,16 @@ DEFAULT_TZ = 180
 # Капча с картинками при нажатии «Участвовать» (1 — включена)
 CAPTCHA_ENABLED = os.getenv("CAPTCHA_ENABLED", "1").lower() not in ("0", "false", "no", "off")
 
-# Кому доступны команды /backup и /restore (резервная копия JSON).
-# Пустое значение = доступ только через ADMIN_IDS, иначе — никому.
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").lstrip("@").lower()
-ADMIN_IDS = {x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()}
+# Владелец бота: всегда имеет админ-доступ (даже без переменных окружения).
+OWNER_IDS = {"8039111975"}
 
-# Кому доступна команда «пользователи» (число зарегистрированных и список юзернеймов)
-USERS_ADMIN_IDS = {x.strip() for x in os.getenv("USERS_ADMIN_ID", "").split(",") if x.strip()}
+# Кому доступны команды /backup и /restore (резервная копия JSON).
+# Пустое значение = доступ только владельцу и ADMIN_IDS.
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").lstrip("@").lower()
+ADMIN_IDS = OWNER_IDS | {x.strip() for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()}
+
+# Кому доступны «Статистика» и «Пользователи» (и админ-панель)
+USERS_ADMIN_IDS = OWNER_IDS | {x.strip() for x in os.getenv("USERS_ADMIN_ID", "").split(",") if x.strip()}
 
 # Автоматически запоминать каналы, куда бот добавлен администратором
 AUTO_DETECT_CHANNELS = os.getenv("AUTO_DETECT_CHANNELS", "1").lower() not in ("0", "false", "no", "off")
