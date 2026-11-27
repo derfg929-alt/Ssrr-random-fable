@@ -11,17 +11,14 @@
       "invite": "🎁 Invite",
       "channels": "📣 My channels",
       "users": "👥 Users",
-      "tickets": "🎫 My tickets",
-      "help": "❓ Help"
+      "help": "❓ Help",
+      "stats": "📊 Statistics"
     },
     "invited_notice": "🎉 Someone joined via your link! Total invited: {invited}",
     "invite_share": "📤 Share",
     "invite_share_text": "🎁 Check out the giveaway bot!",
     "tickets_title": "🎫 Your tickets and chances:",
-    "no_tickets": "🎫 No entries yet. Find a giveaway in a channel and tap “Join”.",
-    "ticket_line": "#{id} · {channel} · 🎫 {tickets} · chance {chance}% · {status}",
-    "ticket_open": "🔗 Open post #{id}",
-    "help_text": "❓ <b>How this bot works</b>\n\n1. Add the bot as a channel admin (with “Post messages”).\n2. “🎉 Create giveaway” → channel → text → media → winners → time.\n3. Publish the post: people tap the button under it.\n\n🎫 “My tickets” shows your chances, 🎁 “Invite” gives your referral link.\n\nCommands: /start, /help, /mydata, /cancel.",
+    "help_text": "❓ <b>How this bot works</b>\n\n1. Add the bot as a channel admin (with “Post messages”).\n2. “🎉 Create giveaway” → channel → text → media → winners → time.\n3. Publish the post: people tap the button under it.\n\n🎁 “Invite” gives your referral link for friends.\n\nCommands: /start, /help, /mydata, /cancel.",
     "my_data_text": "👤 <b>Your data</b>\n\nID: {id}\nUsername: {username}\nLanguage: {lang}\nFriends invited: {refs}\nJoined via your link: {invited}\nGiveaways joined: {draws}\n\nWe keep it to run giveaways and count tickets. You can delete it at any time.",
     "delete_data": "🗑 Delete my data",
     "delete_confirm": "Delete your data? Your entries in active giveaways will be removed and referral links broken.",
@@ -299,5 +296,24 @@
     "expired": "⌛ This check has expired. Tap “Join” again.",
     "open_bot": "To take part, open {bot} and press /start.",
     "too_many_attempts": "🚫 Too many checks in a row. Please wait a few minutes."
+  },
+  "stats": {
+    "title": "📊 <b>Bot statistics</b>\n\n👥 Users: <b>{users}</b>\n📣 Chats with the bot: <b>{chats}</b>\n🎉 Giveaways: <b>{draws}</b> (active: {active})\n👤 Entries: <b>{players}</b>\n🎫 Tickets in active giveaways: <b>{tickets}</b>",
+    "users": "👥 Users",
+    "chats": "📣 Channels",
+    "draws": "🎉 Giveaways",
+    "refresh": "🔄 Refresh",
+    "back": "◀️ Back",
+    "page": "Page",
+    "users_total": "👥 Bot users: <b>{users}</b>",
+    "users_title": "👥 <b>Users</b>\n\nTotal: <b>{users}</b>\nWith username: {named}\nWithout username: {anon}",
+    "users_empty": "👥 No users yet.",
+    "chats_title": "📣 <b>Chats with the bot</b>\n\nTotal: <b>{chats}</b>\n• channels: {channels}\n• groups: {groups}\n• with posting rights: {can_post}",
+    "chats_empty": "📣 The bot has not been added to any channel or group yet.",
+    "chat_line": "• {icon} {title} — {kind}",
+    "kind_channel": "channel",
+    "kind_group": "group",
+    "more": "…and {n} more",
+    "draws_title": "🎉 <b>Giveaways</b>\n\nTotal: <b>{draws}</b>\n• {draft}: {n_draft}\n• {scheduled}: {n_scheduled}\n• {active}: {n_active}\n• {finished}: {n_finished}\n• {cancelled}: {n_cancelled}\n\n👤 Entries: <b>{players}</b> (unique: {uniq})\n🎫 Tickets in active: <b>{tickets}</b>"
   }
 }
