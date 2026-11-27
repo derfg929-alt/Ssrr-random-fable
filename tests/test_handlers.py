@@ -44,15 +44,65 @@ def _reply_labels(markup):
     return labels
 
 
-def test_menu_has_tickets_and_help():
+def test_menu_has_help_and_no_tickets():
     labels = _reply_labels(keyboard.main_menu(1))
-    assert TEXTS["RU"]["menu"]["buttons"]["tickets"] in labels
     assert TEXTS["RU"]["menu"]["buttons"]["help"] in labels
+    assert not any("билет" in label.lower() for label in labels)
 
 
 def test_menu_actions_cover_new_buttons():
-    assert main.MENU_HANDLERS["tickets"] is main.m_tickets
+    assert main.MENU_HANDLERS["stats"] is main.m_stats
     assert main.MENU_HANDLERS["help"] is main.m_help
+    assert "tickets" not in main.MENU_HANDLERS
+
+
+def test_stats_button_only_for_admin(monkeypatch):
+    assert TEXTS["RU"]["menu"]["buttons"]["stats"] not in _reply_labels(keyboard.main_menu(1))
+    monkeypatch.setattr(config, "USERS_ADMIN_IDS", {"1"})
+    assert TEXTS["RU"]["menu"]["buttons"]["stats"] in _reply_labels(keyboard.main_menu(1))
+
+
+def test_show_stats_counts(db, bot):
+    db.new(models.User, user_id="1", user_name="A")
+    db.new(models.User, user_id="2", user_name="B")
+    db.new(models.BotChat, chat_id="-1001", title="Ch", type="channel", can_post=1)
+    draw = _draw(db)
+    db.new(models.Player, draw_id=draw.id, user_id="1", name="A")
+
+    main.show_stats(1)
+
+    assert bot.sent[-1][1] == TEXTS["RU"]["stats"]["title"].format(
+        users=2, chats=1, draws=1, active=1, players=1, tickets=1)
+
+
+def test_show_stats_chats_lists_bot_chats(db, bot):
+    db.new(models.BotChat, chat_id="-1001", title="My Channel", type="channel", can_post=1)
+    db.new(models.BotChat, chat_id="-2002", title="My Group", type="supergroup", can_post=0)
+
+    main.show_stats_chats(1)
+
+    text = bot.sent[-1][1]
+    assert "My Channel" in text and "My Group" in text
+    assert "✅" in text and "🔒" in text
+
+
+def test_show_stats_draws_counts_by_status(db, bot):
+    _draw(db, status="active")
+    _draw(db, status="finished")
+    _draw(db, status="draft")
+
+    main.show_stats_draws(1)
+
+    text = bot.sent[-1][1]
+    assert TEXTS["RU"]["stats"]["draws_title"].format(
+        draws=3, draft="черновик", n_draft=1, scheduled="запланирован", n_scheduled=0,
+        active="активен", n_active=1, finished="завершён", n_finished=1,
+        cancelled="отменён", n_cancelled=0, players=0, uniq=0, tickets=0) == text
+
+
+def test_stats_callback_ignored_for_non_admin(bot, make_call):
+    main.route_callback(make_call("st:main", uid=5))
+    assert bot.sent == []
 
 
 def test_join_kb_uses_draw_language(db):
@@ -63,30 +113,11 @@ def test_join_kb_uses_draw_language(db):
     assert any("Join" in label for label in labels)
 
 
-def test_tickets_kb_without_links_is_none():
-    assert keyboard.tickets_kb(1, [(1, None)]) is None
-
-
 def test_draw_summary_shows_tickets(db):
     draw = _draw(db)
     db.new(models.Player, draw_id=draw.id, user_id="1", name="Ann")
     text = middleware.draw_summary(1, draw)
     assert TEXTS["RU"]["draw"]["summary"]["tickets"] in text
-
-
-def test_m_tickets_lists_participation(db, bot, make_message):
-    draw = _draw(db)
-    db.new(models.Player, draw_id=draw.id, user_id="5", name="Ann")
-    main.m_tickets(make_message(uid=5))
-
-    text = bot.sent[-1][1]
-    assert TEXTS["RU"]["menu"]["tickets_title"] in text
-    assert f"#{draw.id}" in text
-
-
-def test_m_tickets_without_participation(db, bot, make_message):
-    main.m_tickets(make_message(uid=5))
-    assert bot.sent[-1][1] == TEXTS["RU"]["menu"]["no_tickets"]
 
 
 def test_mydata_text(db):

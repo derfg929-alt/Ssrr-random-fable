@@ -14,12 +14,12 @@ def main_menu(user_id):
     b = T(user_id)["menu"]["buttons"]
     kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row(b["create"], b["my"])
-    kb.row(b["channels"], b["tickets"])
-    kb.row(b["invite"], b["support"])
-    kb.row(b["lang"], b["help"])
+    kb.row(b["channels"], b["invite"])
+    kb.row(b["support"], b["lang"])
+    kb.row(b["help"])
     user = get_user(user_id)
     if is_users_admin(user_id, getattr(user, "username", None) if user else None):
-        kb.row(b["users"])
+        kb.row(b["stats"], b["users"])
     return kb
 
 
@@ -220,21 +220,30 @@ def confirm_kb(user_id, draw_id, action):
 
 
 # ---- Пользователи бота (только для владельца) ----
-def users_kb(page, pages):
+def users_kb(page, pages, user_id=None):
     nav = []
     if page > 0:
         nav.append(("◀️", f"usr:{page - 1}"))
     if page + 1 < pages:
         nav.append(("▶️", f"usr:{page + 1}"))
-    return ikb([nav] if nav else [])
+    rows = [nav] if nav else []
+    if user_id is not None:
+        rows.append([(T(user_id)["stats"]["back"], "st:main")])
+    return ikb(rows)
 
 
-# ---- Мои билеты ----
-def tickets_kb(user_id, links):
-    """links = [(draw_id, ссылка_на_пост), ...] — только кнопки перехода к посту."""
-    t = T(user_id)["menu"]
-    rows = [[(t["ticket_open"].format(id=draw_id), link)] for draw_id, link in links if link]
-    return ikb(rows) if rows else None
+# ---- Статистика (только для владельца) ----
+def stats_kb(user_id):
+    t = T(user_id)["stats"]
+    return ikb([
+        [(t["users"], "st:users"), (t["chats"], "st:chats")],
+        [(t["draws"], "st:draws"), (t["refresh"], "st:main")],
+    ])
+
+
+def stats_back_kb(user_id):
+    t = T(user_id)["stats"]
+    return ikb([[(t["back"], "st:main")]])
 
 
 # ---- Мои данные ----

@@ -286,25 +286,28 @@ def _user_sort_key(u):
 
 
 def show_users(uid, page=0, message=None):
+    t = T(uid)["stats"]
     users = db.select_all(models.User)
     users.sort(key=_user_sort_key)
     if not users:
-        return edit_or_send(uid, message, "👥 Пользователей пока нет.", None)
+        return edit_or_send(uid, message, t["users_empty"], keyboard.users_kb(0, 1, uid))
     pages = (len(users) + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE
     page = max(0, min(page, pages - 1))
     start = page * USERS_PAGE_SIZE
     chunk = users[start:start + USERS_PAGE_SIZE]
-    lines = [f"👥 Всего пользователей: <b>{len(users)}</b>", f"Страница {page + 1}/{pages}", ""]
+    named = sum(1 for u in users if u.username)
+    lines = [t["users_title"].format(users=len(users), named=named, anon=len(users) - named),
+             f"{t['page']} {page + 1}/{pages}", ""]
     lines += [f"{start + i + 1}. {esc(_user_label(u))}" for i, u in enumerate(chunk)]
-    return edit_or_send(uid, message, "\n".join(lines), keyboard.users_kb(page, pages))
+    return edit_or_send(uid, message, "\n".join(lines), keyboard.users_kb(page, pages, uid))
 
 
 def _send_users_count(chat_id, user):
     ensure_user(user)
     total = db.count(models.User)
     pages = max(1, (total + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE)
-    bot.send_message(chat_id, f"👥 Пользователей бота: <b>{total}</b>",
-                     reply_markup=keyboard.users_kb(0, pages))
+    bot.send_message(chat_id, T(chat_id)["stats"]["users_total"].format(users=total),
+                     reply_markup=keyboard.users_kb(0, pages, chat_id))
 
 
 @bot.message_handler(func=_users_command)
@@ -320,6 +323,73 @@ def m_users(m):
     if not is_users_admin(user.id, getattr(user, "username", None)):
         return send_menu(m.chat.id)
     _send_users_count(m.chat.id, user)
+
+
+# ======================= СТАТИСТИКА (ТОЛЬКО ВЛАДЕЛЕЦ) =======================
+def _stats_tickets(draws, refs):
+    return sum(middleware.total_tickets(d, refs=refs)
+               for d in draws if d.status == "active")
+
+
+def show_stats(uid, message=None):
+    t = T(uid)["stats"]
+    draws = db.select_all(models.Draw)
+    active = [d for d in draws if d.status == "active"]
+    text = t["title"].format(
+        users=db.count(models.User),
+        chats=db.count(models.BotChat),
+        draws=len(draws),
+        active=len(active),
+        players=db.count(models.Player),
+        tickets=_stats_tickets(draws, middleware.ref_counts()),
+    )
+    edit_or_send(uid, message, text, keyboard.stats_kb(uid))
+
+
+def show_stats_chats(uid, message=None):
+    t = T(uid)["stats"]
+    chats = db.select_all(models.BotChat, order_by=models.BotChat.title)
+    if not chats:
+        return edit_or_send(uid, message, t["chats_empty"], keyboard.stats_back_kb(uid))
+    channels = sum(1 for c in chats if c.type == "channel")
+    lines = [t["chats_title"].format(
+        chats=len(chats), channels=channels, groups=len(chats) - channels,
+        can_post=sum(1 for c in chats if c.can_post))]
+    for c in chats[:config.MAX_LISTED_CHANNELS]:
+        lines.append(t["chat_line"].format(
+            icon="✅" if c.can_post else "🔒",
+            title=esc(short(c.title or c.chat_id, 40)),
+            kind=t["kind_channel"] if c.type == "channel" else t["kind_group"]))
+    if len(chats) > config.MAX_LISTED_CHANNELS:
+        lines.append(t["more"].format(n=len(chats) - config.MAX_LISTED_CHANNELS))
+    edit_or_send(uid, message, "\n".join(lines), keyboard.stats_back_kb(uid))
+
+
+def show_stats_draws(uid, message=None):
+    t = T(uid)["stats"]
+    draws = db.select_all(models.Draw)
+    counts = {status: sum(1 for d in draws if d.status == status)
+              for status in ("draft", "scheduled", "active", "finished", "cancelled")}
+    players = db.select_all(models.Player)
+    text = t["draws_title"].format(
+        draws=len(draws),
+        draft=T(uid)["status"]["draft"], n_draft=counts["draft"],
+        scheduled=T(uid)["status"]["scheduled"], n_scheduled=counts["scheduled"],
+        active=T(uid)["status"]["active"], n_active=counts["active"],
+        finished=T(uid)["status"]["finished"], n_finished=counts["finished"],
+        cancelled=T(uid)["status"]["cancelled"], n_cancelled=counts["cancelled"],
+        players=len(players),
+        uniq=len({p.user_id for p in players}),
+        tickets=_stats_tickets(draws, middleware.ref_counts()),
+    )
+    edit_or_send(uid, message, text, keyboard.stats_back_kb(uid))
+
+
+def m_stats(m):
+    user = m.from_user
+    if not is_users_admin(user.id, getattr(user, "username", None)):
+        return send_menu(m.chat.id)
+    show_stats(m.chat.id)
 
 
 # ======================= КАНАЛЫ =======================
@@ -516,30 +586,6 @@ def m_help(m):
                      disable_web_page_preview=True)
 
 
-def m_tickets(m):
-    """Билеты и шансы пользователя по розыгрышам, в которых он участвует."""
-    uid = m.chat.id
-    t = T(uid)["menu"]
-    players = db.select_all(models.Player, user_id=str(uid))
-    refs = middleware.ref_counts()
-    lines, links = [t["tickets_title"]], []
-    for p in sorted(players, key=lambda p: p.id, reverse=True)[:10]:
-        d = db.get_one(models.Draw, id=p.draw_id)
-        if not d or d.status not in ("active", "finished"):
-            continue
-        tickets = middleware.tickets_for(d, p, refs.get(str(uid), 0), p.boost_count)
-        total = middleware.total_tickets(d, refs=refs)
-        chance = (tickets * 100.0 / total) if total else 0.0
-        lines.append(t["ticket_line"].format(
-            id=d.id, channel=esc(short(d.channel_name or "", 24)), tickets=tickets,
-            chance=f"{chance:.1f}", status=T(uid)["status"][d.status]))
-        links.append((d.id, middleware.post_link(d)))
-    if len(lines) == 1:
-        return bot.send_message(uid, t["no_tickets"], reply_markup=keyboard.main_menu(uid))
-    bot.send_message(uid, "\n".join(lines), reply_markup=keyboard.tickets_kb(uid, links),
-                     disable_web_page_preview=True)
-
-
 def mydata_text(uid):
     t = T(uid)["menu"]
     user = get_user(uid)
@@ -578,7 +624,7 @@ def handle_my_data(call, p):
 
 MENU_HANDLERS = {"create": m_create, "my": m_my, "channels": m_channels,
                  "lang": m_lang, "support": m_support, "invite": m_invite,
-                 "tickets": m_tickets, "help": m_help, "users": m_users}
+                 "help": m_help, "users": m_users, "stats": m_stats}
 
 
 # ======================= КОМАНДЫ =======================
@@ -1055,6 +1101,19 @@ def route_callback(call):
             page = 0
         answer(call)
         return show_users(uid, page, call.message)
+
+    if cmd == "st":
+        if not is_users_admin(uid, getattr(call.from_user, "username", None)):
+            return answer(call)
+        answer(call)
+        view = p[1] if len(p) > 1 else "main"
+        if view == "users":
+            return show_users(uid, 0, call.message)
+        if view == "chats":
+            return show_stats_chats(uid, call.message)
+        if view == "draws":
+            return show_stats_draws(uid, call.message)
+        return show_stats(uid, call.message)
 
     if cmd == "lst":
         try:
