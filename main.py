@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import logging
 import re
@@ -286,7 +288,7 @@ def _user_sort_key(u):
 
 
 def show_users(uid, page=0, message=None):
-    t = T(uid)["stats"]
+    t = T(uid)["admin"]
     users = db.select_all(models.User)
     users.sort(key=_user_sort_key)
     if not users:
@@ -306,7 +308,7 @@ def _send_users_count(chat_id, user):
     ensure_user(user)
     total = db.count(models.User)
     pages = max(1, (total + USERS_PAGE_SIZE - 1) // USERS_PAGE_SIZE)
-    bot.send_message(chat_id, T(chat_id)["stats"]["users_total"].format(users=total),
+    bot.send_message(chat_id, T(chat_id)["admin"]["users_total"].format(users=total),
                      reply_markup=keyboard.users_kb(0, pages, chat_id))
 
 
@@ -325,6 +327,99 @@ def m_users(m):
     _send_users_count(m.chat.id, user)
 
 
+# ======================= АДМИН-ПАНЕЛЬ (ТОЛЬКО ВЛАДЕЛЕЦ) =======================
+def show_admin(uid, message=None):
+    t = T(uid)["admin"]
+    edit_or_send(uid, message, t["title"], keyboard.admin_kb(uid))
+
+
+def m_admin(m):
+    user = m.from_user
+    if not is_users_admin(user.id, getattr(user, "username", None)):
+        return send_menu(m.chat.id)
+    show_admin(m.chat.id)
+
+
+def _time_left(uid, end_at):
+    t = T(uid)["admin"]
+    if not end_at:
+        return t["no_deadline"]
+    secs = (end_at - utcnow()).total_seconds()
+    if secs <= 0:
+        return t["ended"]
+    mins = int(secs // 60)
+    days, mins = divmod(mins, 1440)
+    hours, mins = divmod(mins, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}{t['unit_d']}")
+    if hours:
+        parts.append(f"{hours}{t['unit_h']}")
+    if not days:
+        parts.append(f"{mins}{t['unit_m']}")
+    return " ".join(parts)
+
+
+def show_live(uid, message=None):
+    t = T(uid)["admin"]
+    draws = db.select_all(models.Draw)
+    players = db.select_all(models.Player)
+    active = [d for d in draws if d.status == "active"]
+    active.sort(key=lambda d: (d.end_at is None, d.end_at or utcnow()))
+    counts = {}
+    for p in players:
+        counts[p.draw_id] = counts.get(p.draw_id, 0) + 1
+    since = utcnow() - timedelta(hours=24)
+    recent = sum(1 for p in players if p.joined_at and p.joined_at >= since)
+    lines = [t["live_title"].format(
+        time=fmt_dt(utcnow(), user_tz(uid)), tz=tz_name(user_tz(uid), uid),
+        users=db.count(models.User), recent=recent,
+        chats=db.count(models.BotChat), draws=len(active),
+        players=sum(counts.get(d.id, 0) for d in active),
+    )]
+    if active:
+        lines.append(t["live_draws"])
+        for d in active[:10]:
+            lines.append(t["live_line"].format(
+                id=d.id, channel=esc(short(d.channel_name or "", 24)),
+                players=counts.get(d.id, 0), left=_time_left(uid, d.end_at)))
+        if len(active) > 10:
+            lines.append(t["live_more"].format(n=len(active) - 10))
+    else:
+        lines.append(t["live_no_draws"])
+    edit_or_send(uid, message, "".join(lines), keyboard.live_kb(uid))
+
+
+def _users_csv():
+    counts = {}
+    for p in db.select_all(models.Player):
+        counts[p.user_id] = counts.get(p.user_id, 0) + 1
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["user_id", "username", "name", "language", "referred_by", "draws"])
+    for u in sorted(db.select_all(models.User), key=_user_sort_key):
+        w.writerow([u.user_id, u.username or "", u.user_name or "", u.language,
+                    u.referred_by or "", counts.get(str(u.user_id), 0)])
+    data = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
+    data.name = "users.csv"
+    return data
+
+
+def send_users_csv(uid):
+    t = T(uid)["admin"]
+    users = db.count(models.User)
+    if not users:
+        return bot.send_message(uid, t["export_empty"], reply_markup=keyboard.admin_kb(uid))
+    bot.send_document(uid, _users_csv(), caption=t["export_caption"].format(n=users))
+
+
+def send_backup(uid):
+    db.save()
+    with open(db.path, "rb") as f:
+        bot.send_document(uid, f, visible_file_name="bot_data.json",
+                          caption=T(uid)["admin"]["backup_caption"])
+
+
 # ======================= СТАТИСТИКА (ТОЛЬКО ВЛАДЕЛЕЦ) =======================
 def _stats_tickets(draws, refs):
     return sum(middleware.total_tickets(d, refs=refs)
@@ -332,10 +427,10 @@ def _stats_tickets(draws, refs):
 
 
 def show_stats(uid, message=None):
-    t = T(uid)["stats"]
+    t = T(uid)["admin"]
     draws = db.select_all(models.Draw)
     active = [d for d in draws if d.status == "active"]
-    text = t["title"].format(
+    text = t["stats_title"].format(
         users=db.count(models.User),
         chats=db.count(models.BotChat),
         draws=len(draws),
@@ -347,7 +442,7 @@ def show_stats(uid, message=None):
 
 
 def show_stats_chats(uid, message=None):
-    t = T(uid)["stats"]
+    t = T(uid)["admin"]
     chats = db.select_all(models.BotChat, order_by=models.BotChat.title)
     if not chats:
         return edit_or_send(uid, message, t["chats_empty"], keyboard.stats_back_kb(uid))
@@ -356,17 +451,19 @@ def show_stats_chats(uid, message=None):
         chats=len(chats), channels=channels, groups=len(chats) - channels,
         can_post=sum(1 for c in chats if c.can_post))]
     for c in chats[:config.MAX_LISTED_CHANNELS]:
+        owner = db.get_one(models.User, user_id=str(c.added_by or ""))
         lines.append(t["chat_line"].format(
             icon="✅" if c.can_post else "🔒",
             title=esc(short(c.title or c.chat_id, 40)),
-            kind=t["kind_channel"] if c.type == "channel" else t["kind_group"]))
+            kind=t["kind_channel"] if c.type == "channel" else t["kind_group"],
+            owner=esc(_user_label(owner)) if owner else "—"))
     if len(chats) > config.MAX_LISTED_CHANNELS:
         lines.append(t["more"].format(n=len(chats) - config.MAX_LISTED_CHANNELS))
     edit_or_send(uid, message, "\n".join(lines), keyboard.stats_back_kb(uid))
 
 
 def show_stats_draws(uid, message=None):
-    t = T(uid)["stats"]
+    t = T(uid)["admin"]
     draws = db.select_all(models.Draw)
     counts = {status: sum(1 for d in draws if d.status == status)
               for status in ("draft", "scheduled", "active", "finished", "cancelled")}
@@ -624,7 +721,7 @@ def handle_my_data(call, p):
 
 MENU_HANDLERS = {"create": m_create, "my": m_my, "channels": m_channels,
                  "lang": m_lang, "support": m_support, "invite": m_invite,
-                 "help": m_help, "users": m_users, "stats": m_stats}
+                 "help": m_help, "users": m_users, "stats": m_stats, "admin": m_admin}
 
 
 # ======================= КОМАНДЫ =======================
@@ -818,10 +915,7 @@ def cmd_backup(message):
     if not _is_admin(message.from_user):
         return
     try:
-        db.save()  # схлопываем журнал, чтобы копия была актуальной
-        with open(db.path, "rb") as f:
-            bot.send_document(message.chat.id, f, visible_file_name="bot_data.json",
-                              caption="💾 Резервная копия данных")
+        send_backup(message.chat.id)
     except Exception:
         log.exception("backup")
 
@@ -1114,6 +1208,31 @@ def route_callback(call):
         if view == "draws":
             return show_stats_draws(uid, call.message)
         return show_stats(uid, call.message)
+
+    if cmd == "ad":
+        if not is_users_admin(uid, getattr(call.from_user, "username", None)):
+            return answer(call)
+        answer(call)
+        view = p[1] if len(p) > 1 else "main"
+        if view == "live":
+            return show_live(uid, call.message)
+        if view == "stats":
+            return show_stats(uid, call.message)
+        if view == "users":
+            return show_users(uid, 0, call.message)
+        if view == "chats":
+            return show_stats_chats(uid, call.message)
+        if view == "draws":
+            return show_stats_draws(uid, call.message)
+        if view == "export":
+            return send_users_csv(uid)
+        if view == "backup":
+            return send_backup(uid)
+        if view == "restore":
+            return bot.send_message(uid, t["admin"]["restore_help"],
+                                    reply_markup=keyboard.admin_kb(uid),
+                                    disable_web_page_preview=True)
+        return show_admin(uid, call.message)
 
     if cmd == "lst":
         try:

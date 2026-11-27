@@ -7,7 +7,7 @@ import main
 import middleware
 import models
 from models import utcnow
-from tool import TEXTS
+from tool import TEXTS, is_users_admin
 
 
 def _flatten(data, prefix=""):
@@ -51,15 +51,34 @@ def test_menu_has_help_and_no_tickets():
 
 
 def test_menu_actions_cover_new_buttons():
-    assert main.MENU_HANDLERS["stats"] is main.m_stats
+    assert main.MENU_HANDLERS["admin"] is main.m_admin
     assert main.MENU_HANDLERS["help"] is main.m_help
     assert "tickets" not in main.MENU_HANDLERS
 
 
-def test_stats_button_only_for_admin(monkeypatch):
-    assert TEXTS["RU"]["menu"]["buttons"]["stats"] not in _reply_labels(keyboard.main_menu(1))
+def test_admin_button_only_for_admin(monkeypatch):
+    label = TEXTS["RU"]["menu"]["buttons"]["admin"]
+    assert label not in _reply_labels(keyboard.main_menu(1))
     monkeypatch.setattr(config, "USERS_ADMIN_IDS", {"1"})
-    assert TEXTS["RU"]["menu"]["buttons"]["stats"] in _reply_labels(keyboard.main_menu(1))
+    assert label in _reply_labels(keyboard.main_menu(1))
+
+
+def test_owner_id_is_admin():
+    assert is_users_admin(8039111975)
+    assert "8039111975" in config.ADMIN_IDS
+    assert "8039111975" in config.USERS_ADMIN_IDS
+
+
+def test_admin_panel_keyboard_has_all_sections():
+    labels = _reply_labels(keyboard.admin_kb(1))
+    t = TEXTS["RU"]["admin"]
+    assert {t["live"], t["stats"], t["users"], t["chats"], t["draws"],
+            t["export"], t["backup"], t["restore"], t["refresh"]} <= labels
+
+
+def test_show_admin_panel(bot):
+    main.show_admin(1)
+    assert bot.sent[-1][1] == TEXTS["RU"]["admin"]["title"]
 
 
 def test_show_stats_counts(db, bot):
@@ -71,12 +90,14 @@ def test_show_stats_counts(db, bot):
 
     main.show_stats(1)
 
-    assert bot.sent[-1][1] == TEXTS["RU"]["stats"]["title"].format(
+    assert bot.sent[-1][1] == TEXTS["RU"]["admin"]["stats_title"].format(
         users=2, chats=1, draws=1, active=1, players=1, tickets=1)
 
 
-def test_show_stats_chats_lists_bot_chats(db, bot):
-    db.new(models.BotChat, chat_id="-1001", title="My Channel", type="channel", can_post=1)
+def test_show_stats_chats_lists_bot_chats_with_owner(db, bot):
+    db.new(models.User, user_id="1", user_name="Ann", username="ann")
+    db.new(models.BotChat, chat_id="-1001", title="My Channel", type="channel",
+           can_post=1, added_by="1")
     db.new(models.BotChat, chat_id="-2002", title="My Group", type="supergroup", can_post=0)
 
     main.show_stats_chats(1)
@@ -84,6 +105,7 @@ def test_show_stats_chats_lists_bot_chats(db, bot):
     text = bot.sent[-1][1]
     assert "My Channel" in text and "My Group" in text
     assert "✅" in text and "🔒" in text
+    assert "@ann" in text
 
 
 def test_show_stats_draws_counts_by_status(db, bot):
@@ -94,15 +116,59 @@ def test_show_stats_draws_counts_by_status(db, bot):
     main.show_stats_draws(1)
 
     text = bot.sent[-1][1]
-    assert TEXTS["RU"]["stats"]["draws_title"].format(
+    assert TEXTS["RU"]["admin"]["draws_title"].format(
         draws=3, draft="черновик", n_draft=1, scheduled="запланирован", n_scheduled=0,
         active="активен", n_active=1, finished="завершён", n_finished=1,
         cancelled="отменён", n_cancelled=0, players=0, uniq=0, tickets=0) == text
 
 
-def test_stats_callback_ignored_for_non_admin(bot, make_call):
-    main.route_callback(make_call("st:main", uid=5))
+def test_show_live_panel(db, bot):
+    db.new(models.User, user_id="1", user_name="Ann")
+    db.new(models.BotChat, chat_id="-1001", title="Ch", type="channel", can_post=1)
+    draw = _draw(db, channel_name="Prize Channel")
+    db.new(models.Player, draw_id=draw.id, user_id="1", name="Ann")
+
+    main.show_live(1)
+
+    text = bot.sent[-1][1]
+    assert "👥 Пользователей: <b>1</b>" in text
+    assert "🆕 Участвовали за 24ч: <b>1</b>" in text
+    assert "🎉 Активных розыгрышей: <b>1</b>" in text
+    assert f"#{draw.id} Prize Channel" in text
+    assert "👥 1" in text
+
+
+def test_show_live_panel_without_draws(bot):
+    main.show_live(1)
+    assert TEXTS["RU"]["admin"]["live_no_draws"] in bot.sent[-1][1]
+
+
+def test_users_csv_contains_users_and_draw_counts(db):
+    db.new(models.User, user_id="1", user_name="Ann", username="ann")
+    draw = _draw(db)
+    db.new(models.Player, draw_id=draw.id, user_id="1", name="Ann")
+
+    text = main._users_csv().getvalue().decode("utf-8-sig")
+
+    assert "user_id;username;name;language;referred_by;draws" in text
+    assert "1;ann;Ann;RU;;1" in text
+
+
+def test_admin_callbacks_ignored_for_non_admin(bot, make_call):
+    for data in ("st:main", "ad:main", "ad:live", "ad:export", "ad:backup"):
+        main.route_callback(make_call(data, uid=5))
     assert bot.sent == []
+    assert bot.documents == []
+
+
+def test_owner_opens_admin_panel(bot, make_call):
+    main.route_callback(make_call("ad:main", uid=8039111975))
+    assert bot.edits[-1][2] == TEXTS["RU"]["admin"]["title"]
+
+
+def test_admin_restore_hint(bot, make_call):
+    main.route_callback(make_call("ad:restore", uid=8039111975))
+    assert bot.sent[-1][1] == TEXTS["RU"]["admin"]["restore_help"]
 
 
 def test_join_kb_uses_draw_language(db):

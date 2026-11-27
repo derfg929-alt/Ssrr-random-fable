@@ -19,7 +19,7 @@ def main_menu(user_id):
     kb.row(b["help"])
     user = get_user(user_id)
     if is_users_admin(user_id, getattr(user, "username", None) if user else None):
-        kb.row(b["stats"], b["users"])
+        kb.row(b["admin"])
     return kb
 
 
@@ -228,22 +228,40 @@ def users_kb(page, pages, user_id=None):
         nav.append(("▶️", f"usr:{page + 1}"))
     rows = [nav] if nav else []
     if user_id is not None:
-        rows.append([(T(user_id)["stats"]["back"], "st:main")])
+        rows.append([(T(user_id)["admin"]["back"], "ad:main")])
     return ikb(rows)
+
+
+# ---- Админ-панель (только для владельца) ----
+def admin_kb(user_id):
+    t = T(user_id)["admin"]
+    return ikb([
+        [(t["live"], "ad:live"), (t["stats"], "ad:stats")],
+        [(t["users"], "ad:users"), (t["chats"], "ad:chats")],
+        [(t["draws"], "ad:draws"), (t["export"], "ad:export")],
+        [(t["backup"], "ad:backup"), (t["restore"], "ad:restore")],
+        [(t["refresh"], "ad:main")],
+    ])
 
 
 # ---- Статистика (только для владельца) ----
 def stats_kb(user_id):
-    t = T(user_id)["stats"]
+    t = T(user_id)["admin"]
     return ikb([
-        [(t["users"], "st:users"), (t["chats"], "st:chats")],
-        [(t["draws"], "st:draws"), (t["refresh"], "st:main")],
+        [(t["users"], "ad:users"), (t["chats"], "ad:chats")],
+        [(t["draws"], "ad:draws"), (t["refresh"], "st:main")],
+        [(t["back"], "ad:main")],
     ])
 
 
 def stats_back_kb(user_id):
-    t = T(user_id)["stats"]
-    return ikb([[(t["back"], "st:main")]])
+    t = T(user_id)["admin"]
+    return ikb([[(t["back"], "ad:main")]])
+
+
+def live_kb(user_id):
+    t = T(user_id)["admin"]
+    return ikb([[(t["refresh"], "ad:live"), (t["back"], "ad:main")]])
 
 
 # ---- Мои данные ----
